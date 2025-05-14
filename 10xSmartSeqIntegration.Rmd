@@ -1046,6 +1046,12 @@ umap_h_df$Cluster <- integrated_data_harmonized$seurat_clusters
 umap_h_df$Cluster <- as.factor(umap_h_df$Cluster)  # ensure clusters are treated as discrete factors
 umap_h_df$orig.ident <- as.factor(integrated_data_harmonized$orig.ident)  # Original dataset source
 
+
+# Check if WellCellType exists and add it if available
+if ("WellCellType" %in% colnames(integrated_data_harmonized)) {umap_h_df$WellCellType <- as.factor(integrated_data_harmonized$WellCellType) # WellCellType metadata
+} else {umap_h_df$WellCellType <- NA # Assign NA if WellCellType is not available
+}
+
 # Load ggplot2 and viridis libraries
 library(ggplot2)
 library(viridis)

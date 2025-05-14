@@ -1034,10 +1034,6 @@ umap_df$Cluster <- integrated_data$seurat_clusters
 umap_df$Cluster <- as.factor(umap_df$Cluster)  # ensure clusters are treated as discrete factors
 umap_df$orig.ident <- as.factor(integrated_data$orig.ident)  # Original dataset source
 
-# Load ggplot2 and viridis libraries
-library(ggplot2)
-library(viridis)
-
 # Define a vector of shapes. Adjust the length as necessary; here we choose 10 different shapes.
 # Common numeric shape codes: 15 (square), 16 (circle), 17 (triangle), 18 (diamond), etc.
 shapes_vector <- c(16, 17, 18, 21, 24, 25, 23, 7, 10, 12)  
@@ -1060,8 +1056,6 @@ print(integratedplot)
 
 ```{r}
 #UMAP by WellCellType
-
-
 # Check metadata columns in each Seurat object
 head(integrated_data@meta.data)
 
@@ -1074,7 +1068,6 @@ wellcell_plot <- DimPlot(integrated_data, reduction = "umap", shape.by = "WellCe
 # Apply the viridis color scale and change the title
 wellcell_plot + scale_color_viridis_d() + ggtitle("Well Cell Types for Integrated Assays") + 
   labs(x = NULL, y = NULL) 
-
 ```
 ```{r}
 # Extract UMAP coordinates and cluster information into a data frame
@@ -1101,7 +1094,125 @@ wellcell_plot <- wellcell_plot +
 print(wellcell_plot)
 
 ```
+# WellCellType (No Shapes)
+```{r}
+#UMAP by WellCellType Viridis Colors
+# Check metadata columns in each Seurat object
+head(integrated_data@meta.data)
+# Plot UMAP with clusters associated with shapes
+wellcell_plot_color <- DimPlot(integrated_data, reduction = "umap", group.by = "WellCellType.x", pt.size = 2, alpha = 0.5) +
+  scale_color_viridis(discrete = TRUE) + plot_annotation(title = "0.75 by Well Cell Type")
 
+
+# Apply the viridis color scale and change the title
+wellcell_plot_color + scale_color_viridis_d() + ggtitle("Well Cell Types for Integrated Assays") + 
+  labs(x = NULL, y = NULL) 
+
+
+# Apply the viridis color scale and change the title, adding grey for NA values
+wellcell_plot + scale_color_manual(values = c("grey", viridis::viridis(length(unique(integrated_data@meta.data$WellCellType.x))))) +
+  ggtitle("Well Cell Types for Integrated Assays") +
+  labs(x = NULL, y = NULL)
+```
+
+```{r}
+# Create a new column 'InputID' that copies 'WellCellType.x'
+integrated_data@meta.data$InputID <- integrated_data@meta.data$WellCellType.x
+
+# Replace NA values with '10x Hybrid' in the 'InputID' column
+integrated_data@meta.data$InputID[is.na(integrated_data@meta.data$InputID)] <- "10x Hybrid"
+
+# Verify the changes
+head(integrated_data@meta.data)
+# Plot UMAP with clusters associated with shapes using the new InputID column
+wellcell_plot_color <- DimPlot(integrated_data, reduction = "umap", group.by = "InputID", pt.size = 2, alpha = 0.5) +
+  scale_color_viridis(discrete = TRUE) + plot_annotation(title = "0.75 by Well Cell Type")
+
+# Apply the viridis color scale and change the title
+wellcell_plot_color + scale_color_viridis_d() + ggtitle("Input Cell Type for Integrated Assays") +
+  labs(x = NULL, y = NULL)
+# Ensure InputID is a factor
+integrated_data@meta.data$InputID <- as.factor(integrated_data@meta.data$InputID)
+
+# Get unique levels of InputID
+levels_inputid <- levels(integrated_data@meta.data$InputID)
+
+# Generate colors for each level, setting "10x Hybrid" to grey and others to viridis
+colors <- c("grey", viridis::viridis(length(levels_inputid) - 1))
+names(colors) <- levels_inputid
+
+# Plot UMAP with clusters associated with shapes using the new InputID column
+wellcell_plot_color <- DimPlot(integrated_data, reduction = "umap", group.by = "InputID", pt.size = 2, alpha = 0.5) +
+  plot_annotation(title = "0.75 by Well Cell Type")
+
+# Apply the manual color scale and change the title
+wellcell_plot_color + scale_color_manual(values = colors) +
+  ggtitle("Well Cell Types for Integrated Assays") +
+  labs(x = NULL, y = NULL)
+
+
+# Create a data frame for plotting
+plot_data <- FetchData(integrated_data, vars = c("umap_1", "umap_2", "InputID"))
+wellcell_plot_color2 <- ggplot(plot_data, aes(x = umap_1, y = umap_2, color = InputID, alpha = ifelse(InputID == "10x Hybrid", 0.2, 1))) +
+  geom_point(size = 2) +
+  scale_color_manual(values = colors) +
+  scale_alpha_identity() +
+  ggtitle("Well Cell Types for Integrated Assays") +
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title = element_blank(),
+    axis.text = element_text(),
+    axis.ticks = element_line(),
+    axis.line = element_line(),
+    panel.grid = element_blank(),
+    legend.position = "right")
+
+
+# Display the plot
+print(wellcell_plot_color2)
+
+```
+
+```{r}
+# Ensure InputID is a factor
+integrated_data@meta.data$InputID <- as.factor(integrated_data@meta.data$InputID)
+
+# Get unique levels of InputID
+levels_inputid <- levels(integrated_data@meta.data$InputID)
+
+# Generate colors for each level, setting "10x Hybrid" to grey and others to a more vibrant subset of viridis
+num_levels <- length(levels_inputid) - 1
+vibrant_colors <- viridis::viridis(num_levels, option = "D")[seq(1, num_levels, length.out = num_levels)]
+colors <- c("grey", vibrant_colors)
+names(colors) <- levels_inputid
+
+# Create a data frame for plotting
+plot_data <- FetchData(integrated_data, vars = c("umap_1", "umap_2", "InputID"))
+
+# Plot UMAP with clusters associated with shapes using the new InputID column
+wellcell_plot_color <- ggplot(plot_data, aes(x = umap_1, y = umap_2, color = InputID, alpha = ifelse(InputID == "10x Hybrid", 0.2, 1))) +
+  geom_point(size = 2) +
+  scale_color_manual(values = colors) +
+  scale_alpha_identity() +
+  ggtitle("Well Cell Types for Integrated Assays") +
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title = element_blank(),
+    axis.text = element_text(),
+    axis.ticks = element_line(),
+    axis.line = element_line(),  # Add axis lines
+    panel.grid = element_blank(),
+    legend.position = "right"
+  )
+
+# Display the plot
+print(wellcell_plot_color)
+
+```
 
 ```{r}
 #install.packages("devtools")  # Install devtools if needed
@@ -1126,9 +1237,6 @@ umap_h_df$Cluster <- integrated_data_harmonized$seurat_clusters
 umap_h_df$Cluster <- as.factor(umap_h_df$Cluster)  # ensure clusters are treated as discrete factors
 umap_h_df$orig.ident <- as.factor(integrated_data_harmonized$orig.ident)  # Original dataset source
 
-# Load ggplot2 and viridis libraries
-library(ggplot2)
-library(viridis)
 
 # Define a vector of shapes. Adjust the length as necessary; here we choose 10 different shapes.
 # Common numeric shape codes: 15 (square), 16 (circle), 17 (triangle), 18 (diamond), etc.
@@ -1206,9 +1314,6 @@ if ("WellCellType" %in% colnames(integrated_data_harmonized)) {umap_h_df$WellCel
 } else {umap_h_df$WellCellType <- NA # Assign NA if WellCellType is not available
 }
 
-# Load ggplot2 and viridis libraries
-#library(ggplot2)
-#library(viridis)
 
 # Define a vector of shapes. Adjust the length as necessary; here we choose 10 different shapes.
 # Common numeric shape codes: 15 (square), 16 (circle), 17 (triangle), 18 (diamond), etc.
