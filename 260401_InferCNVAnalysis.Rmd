@@ -1,0 +1,600 @@
+---
+title: "InferCNV"
+author: "KQ"
+date: "2025-07-14"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+# ========================================
+# inferCNV INSTALLATION GUIDE
+# ========================================
+
+# Method 1: Install from Bioconductor (Recommended)
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("infercnv")
+
+# Method 2: Install from GitHub (if Bioconductor version has issues)
+# install.packages("devtools")
+# devtools::install_github("broadinstitute/inferCNV")
+
+# Required dependencies (install if needed)
+BiocManager::install(c(
+    "SingleCellExperiment",
+    "SummarizedExperiment", 
+    "BiocGenerics",
+    "S4Vectors",
+    "GenomeInfoDb",
+    "IRanges",
+    "GenomicRanges",
+    "edgeR",
+    "BiocParallel"
+))
+
+# Additional CRAN packages
+install.packages(c(
+    "Matrix",
+    "futile.logger", 
+    "RColorBrewer",
+    "gplots",
+    "fastcluster",
+    "parallelDist",
+    "argparse",
+    "logging",
+    "phyclust",
+    "caTools",
+    "igraph"
+))
+
+# Verify installation
+library(infercnv)
+packageVersion("infercnv")
+
+# Check if installation was successful
+cat("inferCNV installation complete!\n")
+cat("Version:", as.character(packageVersion("infercnv")), "\n")
+
+# ========================================
+# TROUBLESHOOTING COMMON INSTALLATION ISSUES
+# ========================================
+
+# Issue 1: Java dependency problems
+# Solution: Install Java and rJava
+# install.packages("rJava")
+# R CMD javareconf (run in terminal)
+
+# Issue 2: Compilation errors on Mac
+# Solution: Install Xcode command line tools
+# xcode-select --install (run in terminal)
+
+# Issue 3: Memory issues during installation
+# Solution: Increase memory limit
+# options(java.parameters = "-Xmx8g")  # Increase to 8GB
+
+# Issue 4: Bioconductor version conflicts
+# Solution: Update Bioconductor
+# BiocManager::install(version = "3.18")  # Use latest version
+```
+```{r}
+# ========================================
+# INFERCNV INTEGRATION WITH COPYKAT ANALYSIS
+# Add this section after your CopyKat analysis
+# ========================================
+
+cat("=== STARTING INFERCNV ANALYSIS ===\n")
+
+# Load required libraries
+library(infercnv)
+library(Matrix)
+library(dplyr)
+
+# ========================================
+# PART 1: PREPARE INFERCNV INPUT DATA
+# ========================================
+
+cat("Preparing inferCNV input data...\n")
+
+# 1. Extract count matrix (use raw counts, not normalized)
+# inferCNV requires raw counts
+if("RNA" %in% names(merged_seurat_hmm@assays)) {
+    if("counts" %in% names(merged_seurat_hmm@assays$RNA@layers)) {
+        count_matrix <- merged_seurat_hmm@assays$RNA@layers$counts
+        rownames(count_matrix) <- rownames(merged_seurat_hmm@assays$RNA)
+        colnames(count_matrix) <- colnames(merged_seurat_hmm@assays$RNA)
+    } else {
+        # Fallback to data layer if counts not available
+        count_matrix <- merged_seurat_hmm@assays$RNA@layers$data
+        rownames(count_matrix) <- rownames(merged_seurat_hmm@assays$RNA)
+        colnames(count_matrix) <- colnames(merged_seurat_hmm@assays$RNA)
+        cat("Warning: Using data layer instead of counts for inferCNV\n")
+    }
+} else {
+    stop("RNA assay not found in Seurat object")
+}
+
+# Convert to dgCMatrix if not already
+if(!inherits(count_matrix, "dgCMatrix")) {
+    count_matrix <- as(count_matrix, "dgCMatrix")
+}
+
+cat("Count matrix dimensions:", dim(count_matrix), "\n")
+
+# 2. Create annotations file
+# Use CopyKat predictions and traditional cell types for reference definition
+annotations_df <- data.frame(
+    cell_id = colnames(merged_seurat_hmm),
+    cell_type = merged_seurat_hmm@meta.data$Traditional_Cell_Type,
+    copykat_pred = merged_seurat_hmm@meta.data$copykat_pred,
+    stringsAsFactors = FALSE
+)
+
+# Define reference cells (diploid cells from immune populations)
+# Immune cells are typically used as normal references
+immune_cell_types <- c("CD4_T_cells", "CD8_T_cells", "B_cells", "NK_cells", "Monocytes")
+reference_cells <- annotations_df$cell_id[
+    annotations_df$cell_type %in% immune_cell_types & 
+    annotations_df$copykat_pred == "diploid" & 
+    !is.na(annotations_df$copykat_pred)
+]
+
+cat("Reference cells identified:", length(reference_cells), "\n")
+
+# Create inferCNV annotations (simplified cell types)
+infercnv_annotations <- annotations_df %>%
+    mutate(
+        infercnv_celltype = case_when(
+            cell_id %in% reference_cells ~ "Normal",
+            cell_type == "CAF_General" ~ "CAF",
+            cell_type %in% c("Epithelial_General", "CRC_Tumor_cells") ~ "Epithelial",
+            cell_type %in% c("Monocytes", "Macrophages_General") ~ "Myeloid",
+            cell_type %in% immune_cell_types ~ "Immune_Other",
+            TRUE ~ "Other"
+        )
+    ) %>%
+    select(cell_id, infercnv_celltype)
+
+# Write annotations file
+write.table(infercnv_annotations, 
+            file = "infercnv_annotations.txt", 
+            sep = "\t", 
+            row.names = FALSE, 
+            col.names = FALSE,
+            quote = FALSE)
+
+cat("Annotations file created\n")
+print(table(infercnv_annotations$infercnv_celltype))
+
+# 3. Prepare gene order file
+# You need a gene positions file - download from inferCNV GitHub or create one
+
+# Option A: Download pre-made gene order file for human (hg38)
+cat("Downloading gene order file...\n")
+
+# For human hg38
+gene_order_url <- "https://data.broadinstitute.org/Trinity/CTAT/cnv/gencode_v19_gene_pos.txt"
+gene_order_file <- "gencode_v19_gene_pos.txt"
+
+# Download if not exists
+if(!file.exists(gene_order_file)) {
+    download.file(gene_order_url, gene_order_file)
+    cat("Gene order file downloaded\n")
+} else {
+    cat("Gene order file already exists\n")
+}
+
+# Option B: Create custom gene order file from your data
+# (Use this if download fails or you need custom positions)
+create_custom_gene_order <- function(seurat_obj, output_file = "custom_gene_order.txt") {
+    # This is a simplified version - you may need actual genomic coordinates
+    # For demonstration, we'll create a mock file
+    genes <- rownames(seurat_obj)
+    
+    # Create mock chromosomal positions (in real analysis, use actual coordinates)
+    set.seed(42)
+    gene_order_df <- data.frame(
+        gene = genes,
+        chr = sample(paste0("chr", c(1:22, "X", "Y")), length(genes), replace = TRUE),
+        start = sample(1:200000000, length(genes)),
+        end = NA
+    )
+    
+    gene_order_df$end <- gene_order_df$start + sample(1000:50000, length(genes))
+    gene_order_df <- gene_order_df[order(gene_order_df$chr, gene_order_df$start), ]
+    
+    write.table(gene_order_df, 
+                file = output_file, 
+                sep = "\t", 
+                row.names = FALSE, 
+                col.names = FALSE,
+                quote = FALSE)
+    
+    return(output_file)
+}
+
+# Use custom gene order if download failed
+if(!file.exists(gene_order_file)) {
+    cat("Creating custom gene order file...\n")
+    gene_order_file <- create_custom_gene_order(merged_seurat_hmm)
+}
+
+# ========================================
+# PART 2: RUN INFERCNV ANALYSIS
+# ========================================
+
+cat("Running inferCNV analysis...\n")
+
+# Create inferCNV object
+infercnv_obj <- CreateInfercnvObject(
+    raw_counts_matrix = count_matrix,
+    annotations_file = "infercnv_annotations.txt",
+    delim = "\t",
+    gene_order_file = gene_order_file,
+    ref_group_names = "Normal"  # Reference group
+)
+
+cat("inferCNV object created\n")
+
+# Create output directory
+infercnv_output_dir <- "inferCNV_output"
+if(!dir.exists(infercnv_output_dir)) {
+    dir.create(infercnv_output_dir, recursive = TRUE)
+}
+
+# Run inferCNV analysis
+# Note: This can take a long time depending on your data size
+cat("Starting inferCNV run (this may take a while)...\n")
+
+infercnv_obj <- infercnv::run(
+    infercnv_obj,
+    cutoff = 0.1,  # cutoff=0.1 works well for 10x Genomics data
+    out_dir = infercnv_output_dir, 
+    cluster_by_groups = TRUE, 
+    denoise = TRUE,
+    HMM = TRUE,  # Enable HMM for CNV prediction
+    num_threads = 4,  # Adjust based on your system
+    output_format = "pdf"  # Can also use "png"
+)
+
+cat("inferCNV analysis completed\n")
+
+# ========================================
+# PART 3: EXTRACT INFERCNV RESULTS
+# ========================================
+
+cat("Extracting inferCNV results...\n")
+
+# Read HMM predictions (CNV states)
+hmm_results_file <- file.path(infercnv_output_dir, "HMM_CNV_predictions.HMMi6.hmm_mode-subclusters.Pnorm_0.5.pred_cnv_genes.dat")
+
+if(file.exists(hmm_results_file)) {
+    cat("Reading HMM CNV predictions...\n")
+    hmm_predictions <- read.table(hmm_results_file, header = TRUE, sep = "\t", row.names = 1)
+    
+    # Calculate CNV burden per cell
+    # CNV states: 0=del, 1=loss, 2=neutral, 3=gain, 4=amp
+    cnv_burden <- apply(hmm_predictions, 2, function(x) {
+        sum(x != 3, na.rm = TRUE) / length(x[!is.na(x)])  # Proportion of non-neutral states
+    })
+    
+    # Define CNV threshold for calling cells as aneuploid
+    cnv_threshold <- quantile(cnv_burden, 0.75, na.rm = TRUE)  # Top 25% as high CNV
+    
+    # Create inferCNV predictions
+    infercnv_predictions <- ifelse(cnv_burden > cnv_threshold, "aneuploid", "diploid")
+    names(infercnv_predictions) <- names(cnv_burden)
+    
+    cat("inferCNV predictions created\n")
+    cat("CNV burden threshold:", cnv_threshold, "\n")
+    print(table(infercnv_predictions))
+    
+} else {
+    cat("HMM results file not found. Creating basic CNV burden from expression data...\n")
+    
+    # Fallback: use expression variability as proxy for CNV burden
+    expr_matrix_file <- file.path(infercnv_output_dir, "infercnv.observations.txt")
+    
+    if(file.exists(expr_matrix_file)) {
+        expr_matrix <- read.table(expr_matrix_file, header = TRUE, sep = "\t", row.names = 1)
+        
+        # Calculate expression variability per cell
+        expr_variability <- apply(expr_matrix, 2, function(x) {
+            mad(x, na.rm = TRUE)  # Median absolute deviation
+        })
+        
+        # Use top quartile as high CNV burden
+        cnv_threshold <- quantile(expr_variability, 0.75, na.rm = TRUE)
+        infercnv_predictions <- ifelse(expr_variability > cnv_threshold, "aneuploid", "diploid")
+        names(infercnv_predictions) <- names(expr_variability)
+        
+        cat("Fallback inferCNV predictions created using expression variability\n")
+        print(table(infercnv_predictions))
+    } else {
+        cat("Warning: No inferCNV output files found. Creating dummy predictions.\n")
+        infercnv_predictions <- rep("diploid", ncol(merged_seurat_hmm))
+        names(infercnv_predictions) <- colnames(merged_seurat_hmm)
+    }
+}
+
+# ========================================
+# PART 4: ADD INFERCNV RESULTS TO SEURAT OBJECT
+# ========================================
+
+cat("Adding inferCNV results to Seurat object...\n")
+
+# Match cell names and add to metadata
+matched_cells <- intersect(colnames(merged_seurat_hmm), names(infercnv_predictions))
+cat("Matched cells:", length(matched_cells), "out of", ncol(merged_seurat_hmm), "\n")
+
+# Initialize inferCNV prediction column
+merged_seurat_hmm@meta.data$infercnv_pred <- NA
+
+# Add predictions for matched cells
+merged_seurat_hmm@meta.data$infercnv_pred[colnames(merged_seurat_hmm) %in% matched_cells] <- 
+    infercnv_predictions[matched_cells]
+
+# For unmatched cells, assign based on reference/non-reference status
+unmatched_cells <- setdiff(colnames(merged_seurat_hmm), names(infercnv_predictions))
+if(length(unmatched_cells) > 0) {
+    cat("Assigning predictions to", length(unmatched_cells), "unmatched cells\n")
+    
+    # Reference cells (immune + diploid) → diploid
+    # Non-reference cells → check copykat or assign diploid as conservative
+    for(cell in unmatched_cells) {
+        if(cell %in% reference_cells) {
+            merged_seurat_hmm@meta.data$infercnv_pred[colnames(merged_seurat_hmm) == cell] <- "diploid"
+        } else {
+            # Use copykat prediction if available, otherwise diploid
+            copykat_pred <- merged_seurat_hmm@meta.data$copykat_pred[colnames(merged_seurat_hmm) == cell]
+            if(!is.na(copykat_pred)) {
+                merged_seurat_hmm@meta.data$infercnv_pred[colnames(merged_seurat_hmm) == cell] <- copykat_pred
+            } else {
+                merged_seurat_hmm@meta.data$infercnv_pred[colnames(merged_seurat_hmm) == cell] <- "diploid"
+            }
+        }
+    }
+}
+
+cat("inferCNV predictions added to metadata\n")
+print(table(merged_seurat_hmm@meta.data$infercnv_pred))
+
+# Add CNV burden scores if available
+if(exists("cnv_burden")) {
+    merged_seurat_hmm@meta.data$infercnv_cnv_burden <- NA
+    merged_seurat_hmm@meta.data$infercnv_cnv_burden[colnames(merged_seurat_hmm) %in% names(cnv_burden)] <- 
+        cnv_burden[colnames(merged_seurat_hmm)[colnames(merged_seurat_hmm) %in% names(cnv_burden)]]
+    
+    cat("CNV burden scores added to metadata\n")
+}
+
+# ========================================
+# PART 5: COMPARE COPYKAT VS INFERCNV PREDICTIONS
+# ========================================
+
+cat("\n=== COMPARING COPYKAT vs inferCNV PREDICTIONS ===\n")
+
+# Create comparison table
+comparison_table <- table(
+    CopyKat = merged_seurat_hmm@meta.data$copykat_pred,
+    inferCNV = merged_seurat_hmm@meta.data$infercnv_pred,
+    useNA = "ifany"
+)
+
+cat("CopyKat vs inferCNV comparison:\n")
+print(comparison_table)
+
+# Calculate agreement
+both_predicted <- !is.na(merged_seurat_hmm@meta.data$copykat_pred) & 
+                  !is.na(merged_seurat_hmm@meta.data$infercnv_pred)
+
+if(sum(both_predicted) > 0) {
+    agreement <- sum(merged_seurat_hmm@meta.data$copykat_pred[both_predicted] == 
+                     merged_seurat_hmm@meta.data$infercnv_pred[both_predicted])
+    total_compared <- sum(both_predicted)
+    agreement_pct <- round(agreement / total_compared * 100, 1)
+    
+    cat(sprintf("Agreement: %d/%d (%.1f%%)\n", agreement, total_compared, agreement_pct))
+}
+
+# Create consensus prediction
+merged_seurat_hmm@meta.data$consensus_pred <- NA
+
+# Both agree on aneuploid → aneuploid
+both_aneuploid <- (merged_seurat_hmm@meta.data$copykat_pred == "aneuploid" & 
+                   merged_seurat_hmm@meta.data$infercnv_pred == "aneuploid")
+both_aneuploid[is.na(both_aneuploid)] <- FALSE
+
+# Both agree on diploid → diploid  
+both_diploid <- (merged_seurat_hmm@meta.data$copykat_pred == "diploid" & 
+                 merged_seurat_hmm@meta.data$infercnv_pred == "diploid")
+both_diploid[is.na(both_diploid)] <- FALSE
+
+# Disagreement → uncertain
+disagreement <- ((merged_seurat_hmm@meta.data$copykat_pred == "aneuploid" & 
+                  merged_seurat_hmm@meta.data$infercnv_pred == "diploid") |
+                 (merged_seurat_hmm@meta.data$copykat_pred == "diploid" & 
+                  merged_seurat_hmm@meta.data$infercnv_pred == "aneuploid"))
+disagreement[is.na(disagreement)] <- FALSE
+
+# Only one method has prediction → use that prediction
+only_copykat <- (!is.na(merged_seurat_hmm@meta.data$copykat_pred) & 
+                 is.na(merged_seurat_hmm@meta.data$infercnv_pred))
+only_infercnv <- (is.na(merged_seurat_hmm@meta.data$copykat_pred) & 
+                  !is.na(merged_seurat_hmm@meta.data$infercnv_pred))
+
+# Assign consensus predictions
+merged_seurat_hmm@meta.data$consensus_pred[both_aneuploid] <- "aneuploid"
+merged_seurat_hmm@meta.data$consensus_pred[both_diploid] <- "diploid"
+merged_seurat_hmm@meta.data$consensus_pred[disagreement] <- "uncertain"
+merged_seurat_hmm@meta.data$consensus_pred[only_copykat] <- 
+    merged_seurat_hmm@meta.data$copykat_pred[only_copykat]
+merged_seurat_hmm@meta.data$consensus_pred[only_infercnv] <- 
+    merged_seurat_hmm@meta.data$infercnv_pred[only_infercnv]
+
+cat("Consensus predictions:\n")
+print(table(merged_seurat_hmm@meta.data$consensus_pred))
+
+# ========================================
+# PART 6: VISUALIZATIONS
+# ========================================
+
+cat("\n=== CREATING COMPARISON VISUALIZATIONS ===\n")
+
+if("umap" %in% names(merged_seurat_hmm@reductions)) {
+    
+    library(patchwork)
+    
+    # Plot 1: CopyKat predictions
+    p_copykat <- DimPlot(merged_seurat_hmm, 
+                        group.by = "copykat_pred",
+                        cols = c("aneuploid" = "red", "diploid" = "blue"),
+                        pt.size = 0.5) +
+        ggtitle("CopyKat Predictions") +
+        theme(aspect.ratio = 1)
+    
+    # Plot 2: inferCNV predictions
+    p_infercnv <- DimPlot(merged_seurat_hmm, 
+                         group.by = "infercnv_pred",
+                         cols = c("aneuploid" = "red", "diploid" = "blue"),
+                         pt.size = 0.5) +
+        ggtitle("inferCNV Predictions") +
+        theme(aspect.ratio = 1)
+    
+    # Plot 3: Consensus predictions
+    p_consensus <- DimPlot(merged_seurat_hmm, 
+                          group.by = "consensus_pred",
+                          cols = c("aneuploid" = "red", "diploid" = "blue", "uncertain" = "gray"),
+                          pt.size = 0.5) +
+        ggtitle("Consensus Predictions") +
+        theme(aspect.ratio = 1)
+    
+    # Plot 4: Agreement/disagreement
+    agreement_annotation <- rep("No_Prediction", nrow(merged_seurat_hmm@meta.data))
+    agreement_annotation[both_aneuploid] <- "Both_Aneuploid"
+    agreement_annotation[both_diploid] <- "Both_Diploid"
+    agreement_annotation[disagreement] <- "Disagreement"
+    agreement_annotation[only_copykat] <- "CopyKat_Only"
+    agreement_annotation[only_infercnv] <- "inferCNV_Only"
+    
+    merged_seurat_hmm@meta.data$temp_agreement <- agreement_annotation
+    
+    p_agreement <- DimPlot(merged_seurat_hmm, 
+                          group.by = "temp_agreement",
+                          cols = c("Both_Aneuploid" = "darkred", 
+                                  "Both_Diploid" = "darkblue",
+                                  "Disagreement" = "orange",
+                                  "CopyKat_Only" = "lightcoral",
+                                  "inferCNV_Only" = "lightblue",
+                                  "No_Prediction" = "lightgray"),
+                          pt.size = 0.5) +
+        ggtitle("Method Agreement") +
+        theme(aspect.ratio = 1)
+    
+    # Combine plots
+    comparison_panel <- (p_copykat | p_infercnv) / (p_consensus | p_agreement)
+    print(comparison_panel)
+    
+    # Clean up temporary column
+    merged_seurat_hmm@meta.data$temp_agreement <- NULL
+    
+    # CNV burden plot if available
+    if("infercnv_cnv_burden" %in% colnames(merged_seurat_hmm@meta.data)) {
+        p_cnv_burden <- FeaturePlot(merged_seurat_hmm, 
+                                   features = "infercnv_cnv_burden",
+                                   pt.size = 0.5) +
+            ggtitle("inferCNV CNV Burden") +
+            theme(aspect.ratio = 1)
+        
+        print(p_cnv_burden)
+    }
+}
+
+# ========================================
+# PART 7: UPDATE HYBRID ANALYSIS WITH INFERCNV
+# ========================================
+
+cat("\n=== UPDATING HYBRID ANALYSIS WITH INFERCNV ===\n")
+
+# Repeat key hybrid analyses using inferCNV predictions
+hybrid_types <- c("CHC1", "CHC2", "CHC3", "THC")
+
+for(hybrid_type in hybrid_types) {
+    if(paste0(hybrid_type, "_Positive_Robust") %in% colnames(merged_seurat_hmm@meta.data)) {
+        
+        hybrid_cells <- merged_seurat_hmm@meta.data[, paste0(hybrid_type, "_Positive_Robust")]
+        
+        if(sum(hybrid_cells, na.rm = TRUE) > 0) {
+            cat(sprintf("\n--- %s Analysis ---\n", hybrid_type))
+            
+            # CopyKat analysis
+            copykat_aneuploid <- sum(merged_seurat_hmm@meta.data$copykat_pred[hybrid_cells] == "aneuploid", na.rm = TRUE)
+            copykat_total <- sum(!is.na(merged_seurat_hmm@meta.data$copykat_pred[hybrid_cells]))
+            copykat_pct <- if(copykat_total > 0) copykat_aneuploid / copykat_total * 100 else 0
+            
+            # inferCNV analysis
+            infercnv_aneuploid <- sum(merged_seurat_hmm@meta.data$infercnv_pred[hybrid_cells] == "aneuploid", na.rm = TRUE)
+            infercnv_total <- sum(!is.na(merged_seurat_hmm@meta.data$infercnv_pred[hybrid_cells]))
+            infercnv_pct <- if(infercnv_total > 0) infercnv_aneuploid / infercnv_total * 100 else 0
+            
+            # Consensus analysis
+            consensus_aneuploid <- sum(merged_seurat_hmm@meta.data$consensus_pred[hybrid_cells] == "aneuploid", na.rm = TRUE)
+            consensus_total <- sum(!is.na(merged_seurat_hmm@meta.data$consensus_pred[hybrid_cells]))
+            consensus_pct <- if(consensus_total > 0) consensus_aneuploid / consensus_total * 100 else 0
+            
+            cat(sprintf("Total %s cells: %d\n", hybrid_type, sum(hybrid_cells, na.rm = TRUE)))
+            cat(sprintf("CopyKat aneuploid: %d/%d (%.1f%%)\n", copykat_aneuploid, copykat_total, copykat_pct))
+            cat(sprintf("inferCNV aneuploid: %d/%d (%.1f%%)\n", infercnv_aneuploid, infercnv_total, infercnv_pct))
+            cat(sprintf("Consensus aneuploid: %d/%d (%.1f%%)\n", consensus_aneuploid, consensus_total, consensus_pct))
+        }
+    }
+}
+
+# ========================================
+# PART 8: SAVE UPDATED RESULTS
+# ========================================
+
+cat("\n=== SAVING RESULTS ===\n")
+
+# Save updated Seurat object
+saveRDS(merged_seurat_hmm, "seurat_with_copykat_and_infercnv.rds")
+
+# Create comparison summary
+comparison_summary <- data.frame(
+    Method = c("CopyKat", "inferCNV", "Consensus"),
+    Total_Cells = c(
+        sum(!is.na(merged_seurat_hmm@meta.data$copykat_pred)),
+        sum(!is.na(merged_seurat_hmm@meta.data$infercnv_pred)),
+        sum(!is.na(merged_seurat_hmm@meta.data$consensus_pred))
+    ),
+    Aneuploid_Count = c(
+        sum(merged_seurat_hmm@meta.data$copykat_pred == "aneuploid", na.rm = TRUE),
+        sum(merged_seurat_hmm@meta.data$infercnv_pred == "aneuploid", na.rm = TRUE),
+        sum(merged_seurat_hmm@meta.data$consensus_pred == "aneuploid", na.rm = TRUE)
+    ),
+    Diploid_Count = c(
+        sum(merged_seurat_hmm@meta.data$copykat_pred == "diploid", na.rm = TRUE),
+        sum(merged_seurat_hmm@meta.data$infercnv_pred == "diploid", na.rm = TRUE),
+        sum(merged_seurat_hmm@meta.data$consensus_pred == "diploid", na.rm = TRUE)
+    )
+)
+
+comparison_summary$Aneuploid_Percent <- round(
+    comparison_summary$Aneuploid_Count / comparison_summary$Total_Cells * 100, 1
+)
+
+write.csv(comparison_summary, "copykat_infercnv_comparison_summary.csv", row.names = FALSE)
+
+cat("Analysis complete!\n")
+cat("Files created:\n")
+cat("- seurat_with_copykat_and_infercnv.rds\n")
+cat("- copykat_infercnv_comparison_summary.csv\n")
+cat("- inferCNV_output/ (directory with detailed inferCNV results)\n")
+
+print(comparison_summary)
+```

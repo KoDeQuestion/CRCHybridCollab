@@ -1,0 +1,3774 @@
+---
+title: "FindMarkersVSManualMarkers"
+author: "KQ"
+date: "2025-07-29"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Read in RDS File
+```{r}
+# Load your harmony-processed Seurat object
+merged_seurat_hmm <- readRDS("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/seurat_with_panel_k_annotations.rds")
+```
+
+# Comprehensive Analysis w/ Z-Scoring
+```{r}
+# COMPLETE SOPHISTICATED TRIPLE ANNOTATION SYSTEM
+# =================================================
+# Three independent, sophisticated annotation approaches:
+# 1. FindMarkers: Data-driven differential expression
+# 2. Manual Signatures: Curated knowledge-based signatures with z-score normalization
+# 3. Hybrid Modules: Sophisticated combo score analysis (Up - Down genes)
+#
+# Each method uses appropriate normalization and threshold strategies
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(tidyr)
+library(viridis)
+
+cat("=== COMPLETE SOPHISTICATED TRIPLE ANNOTATION SYSTEM ===\n")
+
+# ==============================================================================
+# CONFIGURATION AND SETUP
+# ==============================================================================
+
+CONFIG <- list(
+  # File paths - UPDATE TO YOUR SYSTEM
+  base_path = "/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/combined_gene_modules",
+  
+  # FindMarkers thresholds
+  findmarkers = list(
+    min_pct = 0.25,
+    logfc_threshold = 0.25,
+    high_conf_markers = 3,
+    medium_conf_markers = 1,
+    max_cells_per_ident = 500
+  ),
+  
+  # Manual signature thresholds (z-score based)
+  manual_signatures = list(
+    min_genes = 3,
+    ctrl_size = 100,
+    high_conf_zscore = 1.5,    # 1.5 SD above mean
+    medium_conf_zscore = 1.0,  # 1.0 SD above mean
+    low_conf_zscore = 0.5      # 0.5 SD above mean
+  ),
+  
+  # Hybrid signature thresholds (z-score based)
+  hybrid_signatures = list(
+    strong_zscore = 1.0,       # 1.0 SD above mean
+    moderate_zscore = 0.5,     # 0.5 SD above mean
+    weak_zscore = 0.2          # 0.2 SD above mean
+  ),
+  
+  # Analysis options
+  save_plots = TRUE,
+  save_intermediate = TRUE,
+  verbose = TRUE,
+  filter_ribosomal = TRUE,
+  filter_mitochondrial = TRUE
+)
+
+# ==============================================================================
+# UTILITY FUNCTIONS
+# ==============================================================================
+
+# Load hybrid modules with error handling
+load_combo_module <- function(filepath, module_name) {
+  if (file.exists(filepath)) {
+    tryCatch({
+      module_data <- read.csv(filepath, stringsAsFactors = FALSE)
+      up_genes <- module_data$Gene[module_data$Regulation == "Up"]
+      down_genes <- module_data$Gene[module_data$Regulation == "Down"]
+      
+      if (CONFIG$verbose) {
+        cat(sprintf("%s module: Up = %d, Down = %d\n", 
+                   module_name, length(up_genes), length(down_genes)))
+      }
+      return(list(up = up_genes, down = down_genes))
+    }, error = function(e) {
+      cat(sprintf("Error loading %s: %s\n", filepath, e$message))
+      return(list(up = character(0), down = character(0)))
+    })
+  } else {
+    if (CONFIG$verbose) cat(sprintf("WARNING: File not found: %s\n", filepath))
+    return(list(up = character(0), down = character(0)))
+  }
+}
+
+# Filter out problematic genes
+filter_problematic_genes <- function(gene_list) {
+  if (CONFIG$filter_ribosomal) {
+    gene_list <- gene_list[!grepl("^RP[SL]", gene_list)]
+  }
+  if (CONFIG$filter_mitochondrial) {
+    gene_list <- gene_list[!grepl("^MT-", gene_list)]
+  }
+  return(gene_list)
+}
+
+# ==============================================================================
+# DATA LOADING AND SIGNATURE PREPARATION
+# ==============================================================================
+
+cat("Loading and preparing gene signatures...\n")
+
+# Load hybrid modules
+chc1_module <- load_combo_module(file.path(CONFIG$base_path, "CHC1_Combined_genes.csv"), "CHC1")
+chc2_module <- load_combo_module(file.path(CONFIG$base_path, "CHC2_Combined_genes.csv"), "CHC2")
+chc3_module <- load_combo_module(file.path(CONFIG$base_path, "CHC3_Combined_genes.csv"), "CHC3")
+thc_module <- load_combo_module(file.path(CONFIG$base_path, "THC_Combined_genes.csv"), "THC")
+
+# Define comprehensive manual signatures
+manual_signatures <- list(
+  # T cell signatures
+  "CD4_T_cells" = c("CD3D", "CD3E", "CD4", "IL7R", "CCR7", "LEF1", "TCF7", "SELL", "CD28"),
+  "CD8_T_cells" = c("CD3D", "CD3E", "CD8A", "CD8B", "CCL5", "GZMA", "GZMB", "PRF1", "CD27"),
+  "Memory_T_cells" = c("IL7R", "CCR7", "CD45RO", "SELL", "TCF7", "LEF1", "CD44", "CD28"),
+  "Naive_T_cells" = c("CCR7", "SELL", "TCF7", "LEF1", "IL7R", "CD45RA", "CD62L"),
+  "Regulatory_T_cells" = c("FOXP3", "IL2RA", "CTLA4", "IKZF2", "TIGIT", "CD25", "ICOS"),
+  "Exhausted_T_cells" = c("PDCD1", "CTLA4", "TIGIT", "LAG3", "HAVCR2", "TOX", "CD244"),
+  
+  # B cell signatures
+  "B_cells" = c("MS4A1", "CD79A", "CD79B", "CD19", "PAX5", "BLK", "FCRLA", "TCL1A"),
+  "Naive_B_cells" = c("MS4A1", "CD79A", "TCL1A", "FCRLA", "CD19", "IGHD", "CD38"),
+  "Memory_B_cells" = c("MS4A1", "CD79A", "CD27", "CD38", "IGHG1", "IGHG3"),
+  "Plasma_cells" = c("IGKC", "IGLC2", "IGLC3", "XBP1", "IRF4", "PRDM1", "CD38", "CD138"),
+  "Plasmablasts" = c("XBP1", "IRF4", "PRDM1", "CD38", "CD27", "IGHG1"),
+  
+  # Myeloid signatures
+  "CD14_Monocytes" = c("CD14", "LYZ", "S100A9", "S100A8", "FCN1", "VCAN", "CD68"),
+  "CD16_Monocytes" = c("FCGR3A", "MS4A7", "CDKN1C", "VMO1", "CKB", "CD16", "RHOC"),
+  "Intermediate_Monocytes" = c("CD14", "FCGR3A", "CD68", "CCR2", "CX3CR1"),
+  "Classical_Monocytes" = c("CD14", "CCR2", "CD68", "S100A8", "S100A9"),
+  "Macrophages_M0" = c("CD68", "CD163", "MSR1", "MRC1", "CSF1R", "ADGRE1", "LYZ"),
+  "M1_Macrophages" = c("CD86", "IL1B", "TNF", "CXCL10", "IL6", "NOS2", "CD80", "STAT1", "IRF1"),
+  "M2_Macrophages" = c("ARG1", "IL10", "MRC1", "CD163", "TGFB1", "IL1RN", "STAT6", "MAF", "CD206"),
+  "M2a_Macrophages" = c("ARG1", "IL10", "MRC1", "CD163", "IL1RN", "CLEC10A"),
+  "M2b_Macrophages" = c("IL10", "IL1B", "TNF", "CD86", "FCGR2B", "SOCS3"),
+  "M2c_Macrophages" = c("IL10", "TGFB1", "ARG1", "STAT3", "SOCS3"),
+  "Tumor_Associated_Macrophages" = c("CD163", "CD206", "ARG1", "IL10", "VEGFA", "MMP9", "CSF1R"),
+  
+  # NK cells
+  "NK_cells" = c("GNLY", "NKG7", "GZMA", "GZMB", "PRF1", "KLRD1", "KLRF1", "NCAM1", "CD16"),
+  "NK_cells_CD56bright" = c("NCAM1", "CD56", "IL7R", "KIT", "GZMA"),
+  "NK_cells_CD56dim" = c("FCGR3A", "CD16", "GZMB", "PRF1", "KLRD1"),
+  
+  # Dendritic cells
+  "Conventional_DC1" = c("CLEC9A", "XCR1", "CADM1", "NECTIN2", "SNX22"),
+  "Conventional_DC2" = c("CD1C", "FCER1A", "CST3", "CLEC10A", "HLA-DRA"),
+  "Plasmacytoid_DC" = c("LILRA4", "TLR7", "ITM2C", "IRF7", "CLEC4C", "TCF4"),
+  "Monocyte_derived_DC" = c("CD14", "CD68", "S100A8", "FCER1A", "CD1C"),
+  
+  # Granulocytes
+  "Neutrophils" = c("FCGR3B", "CXCR1", "CXCR2", "S100A12", "CEACAM8", "CSF3R"),
+  "Eosinophils" = c("SIGLEC8", "CCR3", "IL5RA", "CLC", "RNASE3"),
+  "Basophils" = c("FCER1A", "CPA3", "TPSAB1", "HDC", "IL4"),
+  
+  # Stromal cells
+  "CAF_Inflammatory" = c("IL6", "IL8", "CXCL1", "CXCL2", "CCL2", "PDGFRA", "FAP", "CXCL12"),
+  "CAF_Myofibroblastic" = c("ACTA2", "TAGLN", "MYL9", "MYLK", "TPM2", "CNN1", "CALD1", "ACTG2"),
+  "CAF_Matrix" = c("COL1A1", "COL1A2", "COL3A1", "COL5A1", "COL6A1", "FN1", "SPARC", "BGN"),
+  "CAF_Contractile" = c("ACTA2", "MYH11", "TAGLN", "MYLK", "CNN1", "TPM1", "TPM2"),
+  "CAF_Antigen_presenting" = c("HLA-DRA", "HLA-DRB1", "CD74", "CXCL12", "CFD"),
+  "CAF_Cycling" = c("MKI67", "TOP2A", "PCNA", "CDK1", "CCNB1"),
+  
+  # Epithelial cells
+  "Epithelial_General" = c("EPCAM", "CDH1", "KRT8", "KRT18", "KRT19", "CLDN3", "CLDN4", "OCLN"),
+  "Colonocytes" = c("CDX2", "KRT20", "MUC2", "TFF3", "FABP1", "CA2", "AQP8", "CEACAM6"),
+  "Goblet_cells" = c("MUC2", "TFF3", "CLCA1", "AGR2", "SPDEF", "FCGBP", "ATOH1"),
+  "Enterocytes" = c("FABP1", "APOA1", "APOA4", "SI", "ALPI", "SLC26A3", "GUCA2A"),
+  "Enteroendocrine_cells" = c("CHGA", "CHGB", "TPH1", "GCG", "SST", "CCK"),
+  "Paneth_cells" = c("LYZ", "DEFA5", "DEFA6", "CAMP", "REG3A"),
+  "Tuft_cells" = c("DCLK1", "TRPM5", "GFI1B", "IL25", "PTGS1"),
+  
+  # Tumor cells
+  "CRC_Tumor_cells" = c("CEACAM5", "CEACAM6", "MYC", "KRAS", "REG4", "SOX9", "CDX1", "LGR5"),
+  "Cancer_Stem_cells" = c("LGR5", "ASCL2", "OLFM4", "SMOC2", "CD44", "CD133", "ALDH1A1", "BMI1"),
+  "Proliferative_Cancer" = c("MKI67", "PCNA", "TOP2A", "MCM2", "MCM6", "CCNA2", "CCNB1"),
+  "EMT_Cancer" = c("VIM", "ZEB1", "ZEB2", "SNAI1", "SNAI2", "TWIST1", "CDH2", "FN1"),
+  "Invasive_Cancer" = c("MMP1", "MMP2", "MMP9", "MMP11", "TIMP1", "PLAU", "SERPINE1"),
+  
+  # Endothelial and vascular
+  "Endothelial_cells" = c("PECAM1", "VWF", "CDH5", "PTPRB", "FLT1", "KDR", "TEK", "CLDN5"),
+  "Arterial_Endothelial" = c("GJA5", "BMX", "DKK2", "EFNB2"),
+  "Venous_Endothelial" = c("NR2F2", "APLNR", "ACKR1"),
+  "Lymphatic_Endothelial" = c("PROX1", "CCL21", "LYVE1", "FLT4"),
+  "Pericytes" = c("PDGFRB", "ACTA2", "NG2", "RGS5", "MCAM", "NOTCH3", "CSPG4"),
+  "Smooth_muscle" = c("ACTA2", "MYH11", "TAGLN", "MYLK", "CNN1", "SMTN", "ACTG2"),
+  
+  # Other cell types
+  "Platelets" = c("PPBP", "PF4", "GNG11", "NRGN", "GP9", "TUBB1", "ITGA2B"),
+  "Mast_cells" = c("TPSAB1", "CPA3", "HDC", "KIT", "FCER1A"),
+  "Mesenchymal_Stem_cells" = c("THY1", "ENG", "NT5E", "ALCAM", "PDGFRA")
+)
+
+# Apply filtering to manual signatures
+manual_signatures <- lapply(manual_signatures, filter_problematic_genes)
+
+# Filter signatures by gene availability
+available_genes <- rownames(merged_seurat_hmm)
+filtered_manual_signatures <- lapply(manual_signatures, function(genes) {
+  present_genes <- genes[genes %in% available_genes]
+  if (length(present_genes) >= CONFIG$manual_signatures$min_genes) present_genes else NULL
+})
+filtered_manual_signatures <- filtered_manual_signatures[!sapply(filtered_manual_signatures, is.null)]
+
+if (CONFIG$verbose) {
+  cat(sprintf("Manual signatures: %d total, %d with ≥%d genes available\n", 
+             length(manual_signatures), length(filtered_manual_signatures), 
+             CONFIG$manual_signatures$min_genes))
+}
+
+# Create hybrid signatures (SOPHISTICATED APPROACH - YOUR PROVEN METHOD)
+hybrid_signatures <- list()
+combo_types <- c("CHC1", "CHC2", "CHC3", "THC")
+modules <- list(chc1_module, chc2_module, chc3_module, thc_module)
+
+for (i in seq_along(combo_types)) {
+  combo_type <- combo_types[i]
+  module <- modules[[i]]
+  
+  # Create separate Up/Down for combo calculation (CRITICAL for sophisticated method)
+  if (length(module$up) > 0) {
+    hybrid_signatures[[paste0(combo_type, "_Up")]] <- filter_problematic_genes(module$up)
+  }
+  if (length(module$down) > 0) {
+    hybrid_signatures[[paste0(combo_type, "_Down")]] <- filter_problematic_genes(module$down)
+  }
+  
+  # Also create combined signature for alternative analysis
+  if (length(module$up) > 0 || length(module$down) > 0) {
+    hybrid_signatures[[combo_type]] <- filter_problematic_genes(c(module$up, module$down))
+  }
+}
+
+# Filter hybrid signatures by availability
+filtered_hybrid_signatures <- lapply(hybrid_signatures, function(genes) {
+  present_genes <- genes[genes %in% available_genes]
+  if (length(present_genes) >= CONFIG$manual_signatures$min_genes) present_genes else NULL
+})
+filtered_hybrid_signatures <- filtered_hybrid_signatures[!sapply(filtered_hybrid_signatures, is.null)]
+
+if (CONFIG$verbose) {
+  cat(sprintf("Hybrid signatures: %d total, %d with ≥%d genes available\n", 
+             length(hybrid_signatures), length(filtered_hybrid_signatures),
+             CONFIG$manual_signatures$min_genes))
+}
+
+# ==============================================================================
+# METHOD 1: SOPHISTICATED FINDMARKERS ANALYSIS
+# ==============================================================================
+
+cat("\n=== METHOD 1: SOPHISTICATED FINDMARKERS ANALYSIS ===\n")
+
+# Load or run FindMarkers
+if (file.exists("sophisticated_findmarkers_results.csv")) {
+  all_markers <- read.csv("sophisticated_findmarkers_results.csv", stringsAsFactors = FALSE)
+  all_markers$cluster <- as.character(all_markers$cluster)
+  cat("Loaded existing sophisticated FindMarkers results\n")
+} else {
+  cat("Running sophisticated FindMarkers analysis...\n")
+  
+  all_markers <- FindAllMarkers(
+    merged_seurat_hmm,
+    only.pos = TRUE,
+    min.pct = CONFIG$findmarkers$min_pct,
+    logfc.threshold = CONFIG$findmarkers$logfc_threshold,
+    test.use = "wilcox",
+    max.cells.per.ident = CONFIG$findmarkers$max_cells_per_ident,
+    return.thresh = 0.01,
+    verbose = CONFIG$verbose
+  )
+  all_markers$cluster <- as.character(all_markers$cluster)
+  
+  if (CONFIG$save_intermediate) {
+    write.csv(all_markers, "sophisticated_findmarkers_results.csv", row.names = FALSE)
+  }
+}
+
+# Enhanced cell type inference (FIXED)
+infer_cell_type_from_markers <- function(top_genes, cluster_id) {
+  markers_str <- paste(tolower(top_genes), collapse = " ")
+  confidence_scores <- numeric(0)  # Initialize as numeric vector, not list
+  confidence_names <- character(0)  # Store names separately
+  
+  # T cell family
+  if (any(grepl("cd3d|cd3e|cd3g", markers_str))) {
+    if (any(grepl("cd4", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.9)
+      confidence_names <- c(confidence_names, "CD4+ T cells")
+    }
+    if (any(grepl("cd8a|cd8b", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.9)
+      confidence_names <- c(confidence_names, "CD8+ T cells")
+    }
+    if (any(grepl("foxp3|il2ra|ctla4", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Regulatory T cells")
+    }
+    if (any(grepl("il7r|ccr7|sell", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Memory T cells")
+    }
+    # Add general T cell if no specific subtype detected
+    if (length(confidence_scores) == 0 || max(confidence_scores) < 0.8) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "T cells")
+    }
+  }
+  
+  # B cell family
+  if (any(grepl("ms4a1|cd79a|cd79b|cd19", markers_str))) {
+    if (any(grepl("igkc|iglc|xbp1|prdm1", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.9)
+      confidence_names <- c(confidence_names, "Plasma cells")
+    } else if (any(grepl("cd27|cd38", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Memory B cells")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "B cells")
+    }
+  }
+  
+  # Myeloid family
+  if (any(grepl("cd14|lyz|s100a8|s100a9", markers_str))) {
+    if (any(grepl("fcgr3a", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "CD16+ Monocytes")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "CD14+ Monocytes")
+    }
+  }
+  
+  if (any(grepl("cd68|cd163|msr1|mrc1", markers_str))) {
+    if (any(grepl("arg1|il10|cd163", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "M2 Macrophages")
+    } else if (any(grepl("il1b|tnf|cd86", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "M1 Macrophages")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Macrophages")
+    }
+  }
+  
+  # NK cells
+  if (any(grepl("gnly|nkg7|klrd1|ncam1", markers_str))) {
+    confidence_scores <- c(confidence_scores, 0.8)
+    confidence_names <- c(confidence_names, "NK cells")
+  }
+  
+  # Dendritic cells
+  if (any(grepl("fcer1a|clec10a|cd1c", markers_str))) {
+    if (any(grepl("lilra4|irf7", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Plasmacytoid DCs")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Dendritic cells")
+    }
+  }
+  
+  # Epithelial cells
+  if (any(grepl("epcam|krt8|krt18|krt19", markers_str))) {
+    if (any(grepl("muc2|tff3|goblet", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Goblet cells")
+    } else if (any(grepl("cdx2|fabp1", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Colonocytes")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Epithelial cells")
+    }
+  }
+  
+  # CAFs/Fibroblasts
+  if (any(grepl("col1a1|col1a2|col3a1|pdgfra", markers_str))) {
+    if (any(grepl("acta2|tagln|mylk", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Myofibroblastic CAFs")
+    } else if (any(grepl("il6|il8|cxcl", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Inflammatory CAFs")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "CAFs")
+    }
+  }
+  
+  # Endothelial
+  if (any(grepl("pecam1|vwf|cdh5", markers_str))) {
+    confidence_scores <- c(confidence_scores, 0.8)
+    confidence_names <- c(confidence_names, "Endothelial cells")
+  }
+  
+  # Tumor cells
+  if (any(grepl("ceacam5|ceacam6|reg4|sox9", markers_str))) {
+    if (any(grepl("ki67|pcna|top2a", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Proliferative cancer cells")
+    } else if (any(grepl("lgr5|cd44|aldh1a1", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Cancer stem cells")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Tumor cells")
+    }
+  }
+  
+  # Other
+  if (any(grepl("ppbp|pf4|gng11", markers_str))) {
+    confidence_scores <- c(confidence_scores, 0.8)
+    confidence_names <- c(confidence_names, "Platelets")
+  }
+  
+  # Return best match or uncharacterized
+  if (length(confidence_scores) > 0) {
+    best_idx <- which.max(confidence_scores)
+    best_match <- confidence_names[best_idx]
+    best_confidence <- confidence_scores[best_idx]
+    
+    return(list(
+      annotation = best_match,
+      confidence = best_confidence,
+      evidence = paste(top_genes[1:min(3, length(top_genes))], collapse = "+")
+    ))
+  } else {
+    return(list(
+      annotation = paste("Uncharacterized cluster", cluster_id),
+      confidence = 0,
+      evidence = paste(top_genes[1:min(2, length(top_genes))], collapse = "+")
+    ))
+  }
+}
+
+# Get sophisticated FindMarkers annotation
+get_sophisticated_findmarkers_annotation <- function(cluster_id, markers_data) {
+  cluster_markers <- markers_data %>%
+    filter(cluster == cluster_id, p_val_adj < 0.05) %>%
+    arrange(p_val_adj, desc(avg_log2FC))
+  
+  if (nrow(cluster_markers) == 0) {
+    return(list(
+      annotation = paste("Cluster", cluster_id),
+      confidence = 0,
+      biological_confidence = 0,
+      method = "No significant markers",
+      evidence = "No markers found",
+      n_markers = 0
+    ))
+  }
+  
+  n_sig_markers <- nrow(cluster_markers)
+  top_genes <- cluster_markers$gene[1:min(10, nrow(cluster_markers))]
+  
+  inference_result <- infer_cell_type_from_markers(top_genes, cluster_id)
+  
+  marker_confidence <- case_when(
+    n_sig_markers >= CONFIG$findmarkers$high_conf_markers ~ "High",
+    n_sig_markers >= CONFIG$findmarkers$medium_conf_markers ~ "Medium",
+    TRUE ~ "Low"
+  )
+  
+  return(list(
+    annotation = inference_result$annotation,
+    confidence = n_sig_markers,
+    biological_confidence = inference_result$confidence,
+    method = paste("FindMarkers", marker_confidence),
+    evidence = inference_result$evidence,
+    n_markers = n_sig_markers
+  ))
+}
+
+# ==============================================================================
+# METHOD 2: SOPHISTICATED MANUAL SIGNATURE ANALYSIS
+# ==============================================================================
+
+cat("\n=== METHOD 2: SOPHISTICATED MANUAL SIGNATURE ANALYSIS ===\n")
+
+# Add module scores for manual signatures
+score_cols <- grep("_Score1$", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+manual_score_pattern <- paste(names(filtered_manual_signatures), collapse = "|")
+existing_manual_scores <- score_cols[grepl(manual_score_pattern, score_cols)]
+
+if (length(existing_manual_scores) == 0) {
+  cat("Adding module scores for manual signatures...\n")
+  
+  merged_seurat_hmm <- AddModuleScore(
+    merged_seurat_hmm,
+    features = filtered_manual_signatures,
+    name = names(filtered_manual_signatures),
+    ctrl = CONFIG$manual_signatures$ctrl_size,
+    seed = 42
+  )
+  
+  cat("✓ Manual signature module scores added\n")
+}
+
+# Z-score normalization for manual signatures
+cat("Applying z-score normalization to manual signatures...\n")
+
+all_score_cols <- grep("_Score1$", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+all_score_names <- gsub("_Score1$", "", all_score_cols)
+
+# Filter to only manual signatures (exclude hybrid signatures)
+manual_signature_names <- names(filtered_manual_signatures)
+manual_only_scores <- all_score_cols[all_score_names %in% manual_signature_names]
+
+if (CONFIG$verbose) {
+  cat(sprintf("Found %d manual signature score columns to normalize\n", length(manual_only_scores)))
+}
+
+for (score_col in manual_only_scores) {
+  zscore_col <- paste0(score_col, "_zscore")
+  
+  if (score_col %in% colnames(merged_seurat_hmm@meta.data)) {
+    scores <- merged_seurat_hmm@meta.data[, score_col]
+    z_scores <- scale(scores)[,1]
+    merged_seurat_hmm@meta.data[, zscore_col] <- z_scores
+    
+    if (CONFIG$verbose) {
+      sig_name <- gsub("_Score1$", "", score_col)
+      cat(sprintf("  %s: Mean %.3f -> %.3f, SD %.3f -> %.3f\n", 
+                  sig_name, mean(scores, na.rm = TRUE), mean(z_scores, na.rm = TRUE), 
+                  sd(scores, na.rm = TRUE), sd(z_scores, na.rm = TRUE)))
+    }
+  }
+}
+
+# Get sophisticated manual annotation
+get_sophisticated_manual_annotation <- function(cluster_id) {
+  cluster_cells <- merged_seurat_hmm$seurat_clusters == cluster_id
+  
+  zscore_cols <- paste0(manual_only_scores, "_zscore")
+  existing_zscore_cols <- intersect(zscore_cols, colnames(merged_seurat_hmm@meta.data))
+  
+  if (length(existing_zscore_cols) == 0) {
+    return(list(
+      annotation = "No manual signature data",
+      confidence = 0,
+      confidence_level = "None",
+      method = "No data",
+      evidence = "Missing z-scores",
+      n_high_conf = 0,
+      n_medium_conf = 0,
+      all_positive_sigs = character(0)
+    ))
+  }
+  
+  cluster_zscores <- merged_seurat_hmm@meta.data[cluster_cells, existing_zscore_cols, drop = FALSE]
+  mean_zscores <- apply(cluster_zscores, 2, mean, na.rm = TRUE)
+  
+  # Clean signature names
+  names(mean_zscores) <- gsub("_Score1_zscore$", "", names(mean_zscores))
+  
+  # Find signatures above different thresholds
+  high_conf_sigs <- names(mean_zscores)[mean_zscores >= CONFIG$manual_signatures$high_conf_zscore]
+  medium_conf_sigs <- names(mean_zscores)[mean_zscores >= CONFIG$manual_signatures$medium_conf_zscore]
+  low_conf_sigs <- names(mean_zscores)[mean_zscores >= CONFIG$manual_signatures$low_conf_zscore]
+  
+  # Determine best annotation and confidence
+  if (length(high_conf_sigs) > 0) {
+    best_sig <- names(which.max(mean_zscores[high_conf_sigs]))
+    best_score <- mean_zscores[best_sig]
+    confidence_level <- "High"
+    evidence <- paste0(best_sig, " (z=", round(best_score, 2), ")")
+    
+    if (length(high_conf_sigs) > 1) {
+      top_sigs <- high_conf_sigs[order(-mean_zscores[high_conf_sigs])][1:min(3, length(high_conf_sigs))]
+      evidence <- paste0(evidence, " + others: ", paste(top_sigs[-1], collapse = ", "))
+    }
+    
+  } else if (length(medium_conf_sigs) > 0) {
+    best_sig <- names(which.max(mean_zscores[medium_conf_sigs]))
+    best_score <- mean_zscores[best_sig]
+    confidence_level <- "Medium"
+    evidence <- paste0(best_sig, " (z=", round(best_score, 2), ")")
+    
+  } else if (length(low_conf_sigs) > 0) {
+    best_sig <- names(which.max(mean_zscores[low_conf_sigs]))
+    best_score <- mean_zscores[best_sig]
+    confidence_level <- "Low"
+    evidence <- paste0(best_sig, " (z=", round(best_score, 2), ")")
+    
+  } else {
+    best_sig <- "Uncharacterized"
+    best_score <- max(mean_zscores, na.rm = TRUE)
+    confidence_level <- "None"
+    evidence <- paste0("Max z-score: ", round(best_score, 2))
+  }
+  
+  return(list(
+    annotation = best_sig,
+    confidence = best_score,
+    confidence_level = confidence_level,
+    method = paste("Manual signatures", confidence_level),
+    evidence = evidence,
+    n_high_conf = length(high_conf_sigs),
+    n_medium_conf = length(medium_conf_sigs),
+    all_positive_sigs = c(high_conf_sigs, medium_conf_sigs, low_conf_sigs)
+  ))
+}
+
+# ==============================================================================
+# METHOD 3: SOPHISTICATED HYBRID ANALYSIS
+# ==============================================================================
+
+cat("\n=== METHOD 3: SOPHISTICATED HYBRID ANALYSIS ===\n")
+
+# Add module scores for hybrid signatures
+hybrid_score_cols <- grep("_Score1$", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+hybrid_score_pattern <- paste(names(filtered_hybrid_signatures), collapse = "|")
+existing_hybrid_scores <- hybrid_score_cols[grepl(hybrid_score_pattern, hybrid_score_cols)]
+
+if (length(existing_hybrid_scores) == 0) {
+  cat("Adding module scores for hybrid signatures...\n")
+  
+  merged_seurat_hmm <- AddModuleScore(
+    merged_seurat_hmm,
+    features = filtered_hybrid_signatures,
+    name = names(filtered_hybrid_signatures),
+    ctrl = CONFIG$manual_signatures$ctrl_size,
+    seed = 42
+  )
+  
+  cat("✓ Hybrid signature module scores added\n")
+}
+
+# CRITICAL: Create combo scores (Up - Down) - The sophisticated approach
+cat("Creating sophisticated combo scores (Up - Down)...\n")
+
+for (combo_type in combo_types) {
+  up_col <- paste0(combo_type, "_Up_Score1")
+  down_col <- paste0(combo_type, "_Down_Score1")
+  combo_col <- paste0(combo_type, "_Combo_Score")
+  
+  if (up_col %in% colnames(merged_seurat_hmm@meta.data) && 
+      down_col %in% colnames(merged_seurat_hmm@meta.data)) {
+    
+    merged_seurat_hmm@meta.data[[combo_col]] <- 
+      merged_seurat_hmm@meta.data[[up_col]] - merged_seurat_hmm@meta.data[[down_col]]
+    
+    if (CONFIG$verbose) {
+      combo_mean <- mean(merged_seurat_hmm@meta.data[[combo_col]])
+      combo_sd <- sd(merged_seurat_hmm@meta.data[[combo_col]])
+      cat(sprintf("  %s: Mean = %.3f, SD = %.3f\n", combo_col, combo_mean, combo_sd))
+    }
+  }
+}
+
+# Z-score normalization for combo scores
+cat("Applying z-score normalization to hybrid combo scores...\n")
+
+combo_cols <- paste0(combo_types, "_Combo_Score")
+existing_combo_cols <- intersect(combo_cols, colnames(merged_seurat_hmm@meta.data))
+
+for (combo_col in existing_combo_cols) {
+  zscore_col <- paste0(combo_col, "_zscore")
+  scores <- merged_seurat_hmm@meta.data[, combo_col]
+  z_scores <- scale(scores)[,1]
+  merged_seurat_hmm@meta.data[, zscore_col] <- z_scores
+  
+  if (CONFIG$verbose) {
+    combo_type <- gsub("_Combo_Score", "", combo_col)
+    cat(sprintf("  %s: Mean %.3f -> %.3f, SD %.3f -> %.3f\n", 
+                combo_type, mean(scores), mean(z_scores), sd(scores), sd(z_scores)))
+  }
+}
+
+# Get sophisticated hybrid annotation
+get_sophisticated_hybrid_annotation <- function(cluster_id) {
+  cluster_cells <- merged_seurat_hmm$seurat_clusters == cluster_id
+  
+  zscore_cols <- paste0(existing_combo_cols, "_zscore")
+  existing_zscore_cols <- intersect(zscore_cols, colnames(merged_seurat_hmm@meta.data))
+  
+  if (length(existing_zscore_cols) == 0) {
+    return(list(
+      annotation = "No hybrid data",
+      confidence = 0,
+      confidence_level = "None",
+      method = "No data",
+      evidence = "Missing combo scores",
+      n_strong = 0,
+      n_moderate = 0,
+      all_positive_hybrids = character(0),
+      all_scores = numeric(0)
+    ))
+  }
+  
+  cluster_zscores <- merged_seurat_hmm@meta.data[cluster_cells, existing_zscore_cols, drop = FALSE]
+  mean_zscores <- apply(cluster_zscores, 2, mean, na.rm = TRUE)
+  
+  names(mean_zscores) <- gsub("_Combo_Score_zscore", "", names(mean_zscores))
+  
+  strong_hybrids <- names(mean_zscores)[mean_zscores >= CONFIG$hybrid_signatures$strong_zscore]
+  moderate_hybrids <- names(mean_zscores)[mean_zscores >= CONFIG$hybrid_signatures$moderate_zscore]
+  weak_hybrids <- names(mean_zscores)[mean_zscores >= CONFIG$hybrid_signatures$weak_zscore]
+  
+  if (length(strong_hybrids) > 0) {
+    best_hybrid <- names(which.max(mean_zscores[strong_hybrids]))
+    best_score <- mean_zscores[best_hybrid]
+    confidence_level <- "Strong"
+    
+    if (length(strong_hybrids) > 1) {
+      all_strong <- paste(strong_hybrids, collapse = "+")
+      annotation <- paste("Multi-hybrid", all_strong)
+      evidence <- paste0("Multiple strong: ", paste(paste0(strong_hybrids, "(", round(mean_zscores[strong_hybrids], 2), ")"), collapse = ", "))
+    } else {
+      annotation <- paste("Hybrid", best_hybrid)
+      evidence <- paste0(best_hybrid, " (z=", round(best_score, 2), ")")
+    }
+    
+  } else if (length(moderate_hybrids) > 0) {
+    best_hybrid <- names(which.max(mean_zscores[moderate_hybrids]))
+    best_score <- mean_zscores[best_hybrid]
+    confidence_level <- "Moderate"
+    annotation <- paste("Potential hybrid", best_hybrid)
+    evidence <- paste0(best_hybrid, " (z=", round(best_score, 2), ")")
+    
+  } else if (length(weak_hybrids) > 0) {
+    best_hybrid <- names(which.max(mean_zscores[weak_hybrids]))
+    best_score <- mean_zscores[best_hybrid]
+    confidence_level <- "Weak"
+    annotation <- paste("Weak hybrid", best_hybrid)
+    evidence <- paste0(best_hybrid, " (z=", round(best_score, 2), ")")
+    
+  } else {
+    best_score <- max(mean_zscores, na.rm = TRUE)
+    confidence_level <- "None"
+    annotation <- "No hybrid signature"
+    evidence <- paste0("Max z-score: ", round(best_score, 2))
+  }
+  
+  return(list(
+    annotation = annotation,
+    confidence = best_score,
+    confidence_level = confidence_level,
+    method = paste("Hybrid combo", confidence_level),
+    evidence = evidence,
+    n_strong = length(strong_hybrids),
+    n_moderate = length(moderate_hybrids),
+    all_positive_hybrids = c(strong_hybrids, moderate_hybrids, weak_hybrids),
+    all_scores = mean_zscores
+  ))
+}
+
+# ==============================================================================
+# APPLY ALL THREE METHODS TO EACH CLUSTER
+# ==============================================================================
+
+cat("\n=== APPLYING TRIPLE ANNOTATION SYSTEM ===\n")
+
+unique_clusters <- sort(unique(as.character(merged_seurat_hmm$seurat_clusters)))
+n_clusters <- length(unique_clusters)
+
+# Initialize comprehensive results dataframe
+triple_results <- data.frame(
+  cluster = unique_clusters,
+  
+  # FindMarkers results
+  FM_annotation = character(n_clusters),
+  FM_confidence = numeric(n_clusters),
+  FM_bio_confidence = numeric(n_clusters),
+  FM_method = character(n_clusters),
+  FM_evidence = character(n_clusters),
+  FM_n_markers = numeric(n_clusters),
+  
+  # Manual signature results
+  MS_annotation = character(n_clusters),
+  MS_confidence = numeric(n_clusters),
+  MS_confidence_level = character(n_clusters),
+  MS_method = character(n_clusters),
+  MS_evidence = character(n_clusters),
+  MS_n_high_conf = numeric(n_clusters),
+  MS_n_medium_conf = numeric(n_clusters),
+  
+  # Hybrid results
+  HY_annotation = character(n_clusters),
+  HY_confidence = numeric(n_clusters),
+  HY_confidence_level = character(n_clusters),
+  HY_method = character(n_clusters),
+  HY_evidence = character(n_clusters),
+  HY_n_strong = numeric(n_clusters),
+  HY_n_moderate = numeric(n_clusters),
+  
+  stringsAsFactors = FALSE
+)
+
+# Process each cluster with all three methods
+cat("Processing clusters with triple annotation system...\n")
+
+for (i in seq_along(unique_clusters)) {
+  cluster_id <- unique_clusters[i]
+  
+  if (i %% 5 == 0) cat(sprintf("Processing cluster %s (%d/%d)\n", cluster_id, i, n_clusters))
+  ###CHECK THIS! WHY IS IT ONLY PROCESSING 3 CLUSTERS?
+  
+  # Method 1: Sophisticated FindMarkers
+  fm_result <- get_sophisticated_findmarkers_annotation(cluster_id, all_markers)
+  triple_results$FM_annotation[i] <- fm_result$annotation
+  triple_results$FM_confidence[i] <- fm_result$confidence
+  triple_results$FM_bio_confidence[i] <- fm_result$biological_confidence
+  triple_results$FM_method[i] <- fm_result$method
+  triple_results$FM_evidence[i] <- fm_result$evidence
+  triple_results$FM_n_markers[i] <- fm_result$n_markers
+  
+  # Method 2: Sophisticated Manual Signatures
+  ms_result <- get_sophisticated_manual_annotation(cluster_id)
+  triple_results$MS_annotation[i] <- ms_result$annotation
+  triple_results$MS_confidence[i] <- ms_result$confidence
+  triple_results$MS_confidence_level[i] <- ms_result$confidence_level
+  triple_results$MS_method[i] <- ms_result$method
+  triple_results$MS_evidence[i] <- ms_result$evidence
+  triple_results$MS_n_high_conf[i] <- ms_result$n_high_conf
+  triple_results$MS_n_medium_conf[i] <- ms_result$n_medium_conf
+  
+  # Method 3: Sophisticated Hybrid Analysis
+  hy_result <- get_sophisticated_hybrid_annotation(cluster_id)
+  triple_results$HY_annotation[i] <- hy_result$annotation
+  triple_results$HY_confidence[i] <- hy_result$confidence
+  triple_results$HY_confidence_level[i] <- hy_result$confidence_level
+  triple_results$HY_method[i] <- hy_result$method
+  triple_results$HY_evidence[i] <- hy_result$evidence
+  triple_results$HY_n_strong[i] <- hy_result$n_strong
+  triple_results$HY_n_moderate[i] <- hy_result$n_moderate
+}
+
+cat("✓ Triple annotation analysis complete!\n")
+
+# ==============================================================================
+# RECONCILIATION AND FINAL ANNOTATIONS
+# ==============================================================================
+
+cat("\n=== CREATING FINAL RECONCILED ANNOTATIONS ===\n")
+
+# Create final reconciled annotation
+create_final_reconciled_annotation <- function(fm_data, ms_data, hy_data, cluster_id) {
+  
+  fm_annotation <- fm_data[["FM_annotation"]]
+  fm_conf_level <- case_when(
+    fm_data[["FM_n_markers"]] >= 5 ~ "High",
+    fm_data[["FM_n_markers"]] >= 2 ~ "Medium", 
+    TRUE ~ "Low"
+  )
+  
+  ms_annotation <- ms_data[["MS_annotation"]]
+  ms_conf_level <- ms_data[["MS_confidence_level"]]
+  
+  hy_annotation <- hy_data[["HY_annotation"]]
+  hy_conf_level <- hy_data[["HY_confidence_level"]]
+  
+  # Decision logic for final annotation
+  
+  # 1. Strong hybrid signal takes precedence
+  if (hy_conf_level == "Strong") {
+    return(list(
+      final_annotation = hy_annotation,
+      method = "Strong_hybrid_priority",
+      confidence = "High",
+      supporting_evidence = paste("Hybrid:", hy_data[["HY_evidence"]], "| MS:", ms_data[["MS_evidence"]])
+    ))
+  }
+  
+  # 2. Both conventional methods high confidence and compatible
+  if ((fm_conf_level == "High" && ms_conf_level == "High") ||
+      (fm_conf_level == "High" && ms_conf_level == "Medium" && !grepl("Uncharacterized", ms_annotation)) ||
+      (ms_conf_level == "High" && fm_conf_level == "Medium" && !grepl("Uncharacterized", fm_annotation))) {
+    
+    # Check compatibility
+    compatible <- grepl(tolower(gsub("[^a-zA-Z]", "", fm_annotation)), 
+                       tolower(gsub("[^a-zA-Z]", "", ms_annotation)), fixed = TRUE) ||
+                  grepl(tolower(gsub("[^a-zA-Z]", "", ms_annotation)), 
+                       tolower(gsub("[^a-zA-Z]", "", fm_annotation)), fixed = TRUE)
+    
+    if (compatible) {
+      # Use more specific annotation
+      if (grepl("Uncharacterized|^Cluster", fm_annotation) && !grepl("Uncharacterized", ms_annotation)) {
+        final_annotation <- ms_annotation
+        method <- "Manual_more_specific"
+      } else if (ms_conf_level == "High" && !grepl("General|broad", ms_annotation)) {
+        final_annotation <- ms_annotation
+        method <- "Manual_high_confidence"
+      } else {
+        final_annotation <- fm_annotation
+        method <- "FindMarkers_data_driven"
+      }
+      
+      # Add moderate hybrid if present
+      if (hy_conf_level %in% c("Moderate", "Weak")) {
+        final_annotation <- paste0(final_annotation, " + ", hy_annotation)
+        method <- paste0(method, "_with_hybrid")
+      }
+      
+      return(list(
+        final_annotation = final_annotation,
+        method = method,
+        confidence = "High",
+        supporting_evidence = paste("FM:", fm_data[["FM_evidence"]], "| MS:", ms_data[["MS_evidence"]])
+      ))
+    }
+  }
+  
+  # 3. Single method high confidence
+  if (ms_conf_level == "High" && !grepl("Uncharacterized", ms_annotation)) {
+    final_annotation <- ms_annotation
+    method <- "Manual_only_confident"
+    conf <- "Medium"
+  } else if (fm_conf_level == "High" && !grepl("Uncharacterized", fm_annotation)) {
+    final_annotation <- fm_annotation
+    method <- "FindMarkers_only_confident"
+    conf <- "Medium"
+  } else if (hy_conf_level == "Moderate") {
+    final_annotation <- hy_annotation
+    method <- "Moderate_hybrid_rescue"
+    conf <- "Medium"
+  } else {
+    # 4. Best effort with available information
+    if (ms_conf_level %in% c("Medium", "Low") && !grepl("Uncharacterized", ms_annotation)) {
+      final_annotation <- ms_annotation
+      method <- "Manual_medium_rescue"
+      conf <- "Low"
+    } else if (!grepl("Uncharacterized|^Cluster", fm_annotation)) {
+      final_annotation <- fm_annotation
+      method <- "FindMarkers_rescue"
+      conf <- "Low"
+    } else {
+      final_annotation <- paste("Uncharacterized cluster", cluster_id)
+      method <- "All_methods_insufficient"
+      conf <- "None"
+    }
+  }
+  
+  # Add weak hybrid if present and not already included
+  if (hy_conf_level %in% c("Moderate", "Weak") && !grepl("hybrid", final_annotation, ignore.case = TRUE)) {
+    final_annotation <- paste0(final_annotation, " + ", hy_annotation)
+    method <- paste0(method, "_with_hybrid")
+  }
+  
+  return(list(
+    final_annotation = final_annotation,
+    method = method,
+    confidence = conf,
+    supporting_evidence = paste("Best available evidence from", method)
+  ))
+}
+
+# Apply reconciliation
+cat("Applying sophisticated reconciliation...\n")
+
+for (i in 1:nrow(triple_results)) {
+  fm_data <- triple_results[i, grep("^FM_", colnames(triple_results))]
+  ms_data <- triple_results[i, grep("^MS_", colnames(triple_results))]
+  hy_data <- triple_results[i, grep("^HY_", colnames(triple_results))]
+  
+  reconciled <- create_final_reconciled_annotation(fm_data, ms_data, hy_data, triple_results$cluster[i])
+  
+  triple_results$Final_annotation[i] <- reconciled$final_annotation
+  triple_results$Final_method[i] <- reconciled$method
+  triple_results$Final_confidence[i] <- reconciled$confidence
+  triple_results$Final_evidence[i] <- reconciled$supporting_evidence
+}
+
+# Clean final annotations
+clean_annotation_names <- function(annotations) {
+  cleaned <- annotations
+  
+  cleaning_rules <- list(
+    c("CD4.*T.*cell", "CD4+ T cells"),
+    c("CD8.*T.*cell", "CD8+ T cells"),
+    c("B.*cell", "B cells"),
+    c("NK.*cell", "NK cells"),
+    c("Plasma.*cell", "Plasma cells"),
+    c("Dendritic.*cell", "Dendritic cells"),
+    c("Epithelial.*cell", "Epithelial cells"),
+    c("Endothelial.*cell", "Endothelial cells")
+  )
+  
+  for (rule in cleaning_rules) {
+    pattern <- rule[1]
+    replacement <- rule[2]
+    cleaned <- ifelse(grepl(pattern, cleaned, ignore.case = TRUE) & 
+                     !grepl("Hybrid|hybrid", cleaned), replacement, cleaned)
+  }
+  
+  cleaned
+}
+
+triple_results$Final_annotation_clean <- clean_annotation_names(triple_results$Final_annotation)
+
+# ==============================================================================
+# ADD RESULTS TO SEURAT OBJECT
+# ==============================================================================
+
+cat("\n=== ADDING RESULTS TO SEURAT OBJECT ===\n")
+
+seurat_clusters_char <- as.character(merged_seurat_hmm$seurat_clusters)
+cluster_mapping <- setNames(triple_results$Final_annotation_clean, triple_results$cluster)
+
+# Add all annotation results to Seurat object
+merged_seurat_hmm@meta.data$FindMarkers_Sophisticated <- 
+  setNames(triple_results$FM_annotation, triple_results$cluster)[seurat_clusters_char]
+
+merged_seurat_hmm@meta.data$Manual_Signatures_Sophisticated <- 
+  setNames(triple_results$MS_annotation, triple_results$cluster)[seurat_clusters_char]
+
+merged_seurat_hmm@meta.data$Hybrid_Sophisticated <- 
+  setNames(triple_results$HY_annotation, triple_results$cluster)[seurat_clusters_char]
+
+merged_seurat_hmm@meta.data$Final_Sophisticated_Annotation <- 
+  cluster_mapping[seurat_clusters_char]
+
+# Add confidence and method information
+merged_seurat_hmm@meta.data$Final_Annotation_Method <- 
+  setNames(triple_results$Final_method, triple_results$cluster)[seurat_clusters_char]
+
+merged_seurat_hmm@meta.data$Final_Annotation_Confidence <- 
+  setNames(triple_results$Final_confidence, triple_results$cluster)[seurat_clusters_char]
+
+cat("✓ All annotation results added to Seurat object\n")
+
+# ==============================================================================
+# ANALYSIS AND VISUALIZATION
+# ==============================================================================
+
+cat("\n=== COMPREHENSIVE ANALYSIS ===\n")
+
+# Method-specific summaries
+create_method_summary <- function(annotations, method_name) {
+  counts <- table(annotations)
+  data.frame(
+    Cell_type = names(counts),
+    Cell_count = as.numeric(counts),
+    Percentage = round(as.numeric(counts) / length(annotations) * 100, 2),
+    Method = method_name,
+    stringsAsFactors = FALSE
+  ) %>% arrange(desc(Cell_count))
+}
+
+fm_summary <- create_method_summary(merged_seurat_hmm$FindMarkers_Sophisticated, "FindMarkers")
+ms_summary <- create_method_summary(merged_seurat_hmm$Manual_Signatures_Sophisticated, "Manual Signatures")
+hy_summary <- create_method_summary(merged_seurat_hmm$Hybrid_Sophisticated, "Hybrid Analysis")
+final_summary <- create_method_summary(merged_seurat_hmm$Final_Sophisticated_Annotation, "Final Reconciled")
+
+# Print summaries
+cat("\n=== FINDMARKERS SOPHISTICATED RESULTS ===\n")
+print(fm_summary)
+
+cat("\n=== MANUAL SIGNATURES SOPHISTICATED RESULTS ===\n")
+print(ms_summary)
+
+cat("\n=== HYBRID SOPHISTICATED RESULTS ===\n")
+print(hy_summary)
+
+cat("\n=== FINAL RECONCILED ANNOTATION RESULTS ===\n")
+print(final_summary)
+
+# Hybrid detection analysis
+hybrid_cells <- final_summary %>% filter(grepl("Hybrid|hybrid", Cell_type))
+if (nrow(hybrid_cells) > 0) {
+  cat("\n=== HYBRID CELLS DETECTED ===\n")
+  print(hybrid_cells)
+  cat(sprintf("Total hybrid cells: %d (%.1f%%)\n", 
+             sum(hybrid_cells$Cell_count), sum(hybrid_cells$Percentage)))
+}
+
+# Method effectiveness analysis
+method_effectiveness <- table(triple_results$Final_method)
+cat("\n=== RECONCILIATION METHOD EFFECTIVENESS ===\n")
+print(method_effectiveness)
+
+# Confidence distribution
+confidence_dist <- table(triple_results$Final_confidence)
+cat("\n=== FINAL ANNOTATION CONFIDENCE DISTRIBUTION ===\n")
+print(confidence_dist)
+
+# ==============================================================================
+# VISUALIZATION
+# ==============================================================================
+
+if (CONFIG$save_plots && "umap" %in% names(merged_seurat_hmm@reductions)) {
+  cat("\n=== CREATING COMPREHENSIVE VISUALIZATIONS ===\n")
+  
+  # Method comparison plots
+  p1 <- DimPlot(merged_seurat_hmm, group.by = "FindMarkers_Sophisticated", 
+                reduction = "umap", label = TRUE, repel = TRUE, label.size = 3) +
+    ggtitle("FindMarkers Sophisticated") +
+    theme(legend.position = "none")
+  
+  p2 <- DimPlot(merged_seurat_hmm, group.by = "Manual_Signatures_Sophisticated",
+                reduction = "umap", label = TRUE, repel = TRUE, label.size = 3) +
+    ggtitle("Manual Gene Modules Sophisticated") +
+    theme(legend.position = "none")
+  
+  p3 <- DimPlot(merged_seurat_hmm, group.by = "Hybrid_Sophisticated",
+                reduction = "umap", label = TRUE, repel = TRUE, label.size = 3) +
+    ggtitle("Hybrid Analysis Sophisticated") +
+    theme(legend.position = "none")
+  
+  p4 <- DimPlot(merged_seurat_hmm, group.by = "Final_Sophisticated_Annotation",
+                reduction = "umap", label = TRUE, repel = TRUE, label.size = 3) +
+    ggtitle("Final Reconciled Annotation") +
+    theme(legend.position = "none")
+  
+  # Create comparison panel
+  comparison_panel <- (p1 | p2) / (p3 | p4)
+  comparison_panel <- comparison_panel + plot_annotation(
+    title = "Sophisticated Triple Annotation System Comparison",
+    subtitle = "Independent analysis by three sophisticated methods with final reconciliation"
+  )
+  
+  print(comparison_panel)
+  ggsave("sophisticated_triple_annotation_comparison.png", 
+         comparison_panel, width = 20, height = 16, dpi = 300)
+  
+  # Individual method plots with legends
+  ggsave("findmarkers_sophisticated.png", p1 + theme(legend.position = "right"), 
+         width = 14, height = 10, dpi = 300)
+  ggsave("manual_signatures_sophisticated.png", p2 + theme(legend.position = "right"), 
+         width = 14, height = 10, dpi = 300)
+  ggsave("hybrid_sophisticated.png", p3 + theme(legend.position = "right"), 
+         width = 14, height = 10, dpi = 300)
+  ggsave("final_sophisticated_annotation.png", p4 + theme(legend.position = "right"), 
+         width = 14, height = 10, dpi = 300)
+  
+  cat("✓ Visualizations saved\n")
+}
+
+# ==============================================================================
+# SAVE RESULTS
+# ==============================================================================
+
+if (CONFIG$save_intermediate) {
+  # Save comprehensive results
+  write.csv(triple_results, "sophisticated_triple_annotation_results.csv", row.names = FALSE)
+  
+  # Save method summaries
+  all_summaries <- rbind(fm_summary, ms_summary, hy_summary, final_summary)
+  write.csv(all_summaries, "sophisticated_annotation_summaries.csv", row.names = FALSE)
+  
+  # Save hybrid-specific results
+  if (nrow(hybrid_cells) > 0) {
+    write.csv(hybrid_cells, "sophisticated_hybrid_cells_detected.csv", row.names = FALSE)
+  }
+  
+  cat("✓ Data files saved\n")
+}
+
+# Save annotated Seurat object
+saveRDS(merged_seurat_hmm, "merged_seurat_sophisticated_triple_annotated.rds")
+
+# ==============================================================================
+# DIAGNOSTIC FUNCTIONS
+# ==============================================================================
+
+# Create diagnostic functions
+check_sophisticated_cluster_annotation <- function(cluster_id) {
+  cat(sprintf("\n=== DETAILED ANALYSIS FOR CLUSTER %s ===\n", cluster_id))
+  
+  cluster_data <- triple_results[triple_results$cluster == cluster_id, ]
+  
+  if (nrow(cluster_data) == 0) {
+    cat("Cluster not found!\n")
+    return()
+  }
+  
+  cat("FINDMARKERS ANALYSIS:\n")
+  cat(sprintf("• Annotation: %s\n", cluster_data$FM_annotation))
+  cat(sprintf("• Confidence: %d markers (Bio confidence: %.2f)\n", 
+             cluster_data$FM_n_markers, cluster_data$FM_bio_confidence))
+  cat(sprintf("• Evidence: %s\n", cluster_data$FM_evidence))
+  
+  cat("\nMANUAL SIGNATURES ANALYSIS:\n")
+  cat(sprintf("• Annotation: %s\n", cluster_data$MS_annotation))
+  cat(sprintf("• Confidence: %.2f (%s level)\n", 
+             cluster_data$MS_confidence, cluster_data$MS_confidence_level))
+  cat(sprintf("• High confidence signatures: %d\n", cluster_data$MS_n_high_conf))
+  cat(sprintf("• Evidence: %s\n", cluster_data$MS_evidence))
+  
+  cat("\nHYBRID ANALYSIS:\n")
+  cat(sprintf("• Annotation: %s\n", cluster_data$HY_annotation))
+  cat(sprintf("• Confidence: %.2f (%s level)\n", 
+             cluster_data$HY_confidence, cluster_data$HY_confidence_level))
+  cat(sprintf("• Strong hybrids: %d, Moderate: %d\n", 
+             cluster_data$HY_n_strong, cluster_data$HY_n_moderate))
+  cat(sprintf("• Evidence: %s\n", cluster_data$HY_evidence))
+  
+  cat("\nFINAL RECONCILIATION:\n")
+  cat(sprintf("• Final Annotation: %s\n", cluster_data$Final_annotation))
+  cat(sprintf("• Method Used: %s\n", cluster_data$Final_method))
+  cat(sprintf("• Confidence: %s\n", cluster_data$Final_confidence))
+  cat(sprintf("• Supporting Evidence: %s\n", cluster_data$Final_evidence))
+}
+
+compare_methods_for_cluster <- function(cluster_id) {
+  cat(sprintf("\n=== METHOD COMPARISON FOR CLUSTER %s ===\n", cluster_id))
+  
+  cluster_data <- triple_results[triple_results$cluster == cluster_id, ]
+  
+  if (nrow(cluster_data) == 0) {
+    cat("Cluster not found!\n")
+    return()
+  }
+  
+  methods_df <- data.frame(
+    Method = c("FindMarkers", "Manual Signatures", "Hybrid Analysis", "Final Reconciled"),
+    Annotation = c(cluster_data$FM_annotation, cluster_data$MS_annotation, 
+                  cluster_data$HY_annotation, cluster_data$Final_annotation),
+    Confidence_Level = c(cluster_data$FM_method, cluster_data$MS_confidence_level,
+                        cluster_data$HY_confidence_level, cluster_data$Final_confidence),
+    Evidence = c(cluster_data$FM_evidence, cluster_data$MS_evidence,
+                cluster_data$HY_evidence, cluster_data$Final_evidence)
+  )
+  
+  print(methods_df)
+  
+  # Cell count for this cluster
+  cluster_cell_count <- sum(merged_seurat_hmm$seurat_clusters == cluster_id)
+  cat(sprintf("Cluster contains %d cells\n", cluster_cell_count))
+}
+
+# ==============================================================================
+# FINAL SUMMARY AND RECOMMENDATIONS
+# ==============================================================================
+
+cat("\n", rep("=", 80), "\n")
+cat("SOPHISTICATED TRIPLE ANNOTATION SYSTEM - COMPLETE\n")
+cat(rep("=", 80), "\n")
+
+cat("\n🎉 SUCCESS! Created sophisticated triple annotation system:\n\n")
+
+cat("📊 METHOD COMPARISON:\n")
+cat("1. FindMarkers Sophisticated:\n")
+cat("   • Enhanced biological inference with confidence scoring\n")
+cat("   • Multi-factor confidence assessment\n")
+cat("   • Filtered ribosomal/mitochondrial genes\n")
+cat("   • Downsampled large clusters for better statistics\n\n")
+
+cat("2. Manual Signatures Sophisticated:\n")
+cat("   • Z-score normalized within signature category\n")
+cat("   • Threshold-based assignment (non-competitive)\n")
+cat("   • Multiple confidence levels (High/Medium/Low)\n")
+cat("   • Comprehensive curated signature library\n\n")
+
+cat("3. Hybrid Analysis Sophisticated:\n")
+cat("   • Combo scores (Up - Down) for biological relevance\n")
+cat("   • Z-score normalized for fair comparison\n")
+cat("   • Independent threshold assignment\n")
+cat("   • Multi-level confidence (Strong/Moderate/Weak)\n\n")
+
+# Calculate method statistics
+total_cells <- ncol(merged_seurat_hmm)
+
+# Uncharacterized rates by method
+fm_unchar <- sum(grepl("Uncharacterized|^Cluster", merged_seurat_hmm$FindMarkers_Sophisticated))
+ms_unchar <- sum(grepl("Uncharacterized", merged_seurat_hmm$Manual_Signatures_Sophisticated))
+final_unchar <- sum(grepl("Uncharacterized", merged_seurat_hmm$Final_Sophisticated_Annotation))
+
+cat("📈 ANNOTATION SUCCESS RATES:\n")
+cat(sprintf("• FindMarkers: %d/%d cells characterized (%.1f%%)\n",
+           total_cells - fm_unchar, total_cells, (total_cells - fm_unchar) / total_cells * 100))
+cat(sprintf("• Manual Signatures: %d/%d cells characterized (%.1f%%)\n",
+           total_cells - ms_unchar, total_cells, (total_cells - ms_unchar) / total_cells * 100))
+cat(sprintf("• Final Reconciled: %d/%d cells characterized (%.1f%%)\n",
+           total_cells - final_unchar, total_cells, (total_cells - final_unchar) / total_cells * 100))
+
+# Hybrid detection summary
+hybrid_positive_cells <- sum(grepl("Hybrid|hybrid", merged_seurat_hmm$Final_Sophisticated_Annotation))
+if (hybrid_positive_cells > 0) {
+  cat(sprintf("• Hybrid cells detected: %d (%.1f%%)\n", 
+             hybrid_positive_cells, hybrid_positive_cells / total_cells * 100))
+  
+  # Break down by hybrid type
+  for (combo_type in combo_types) {
+    type_count <- sum(grepl(combo_type, merged_seurat_hmm$Final_Sophisticated_Annotation))
+    if (type_count > 0) {
+      cat(sprintf("  - %s: %d cells\n", combo_type, type_count))
+    }
+  }
+}
+
+# Method effectiveness analysis
+cat("\n🔧 RECONCILIATION METHOD EFFECTIVENESS:\n")
+top_methods <- head(sort(method_effectiveness, decreasing = TRUE), 3)
+for (i in 1:length(top_methods)) {
+  method_name <- names(top_methods)[i]
+  count <- top_methods[i]
+  cat(sprintf("%d. %s: %d clusters\n", i, method_name, count))
+}
+
+# Confidence distribution
+high_conf <- sum(triple_results$Final_confidence == "High")
+medium_conf <- sum(triple_results$Final_confidence == "Medium")
+low_conf <- sum(triple_results$Final_confidence == "Low")
+
+# COMPLETE SOPHISTICATED TRIPLE ANNOTATION SYSTEM
+# =================================================
+# Three independent, sophisticated annotation approaches:
+# 1. FindMarkers: Data-driven differential expression
+# 2. Manual Signatures: Curated knowledge-based signatures with z-score normalization
+# 3. Hybrid Modules: Sophisticated combo score analysis (Up - Down genes)
+#
+# Each method uses appropriate normalization and threshold strategies
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(tidyr)
+library(viridis)
+
+cat("=== COMPLETE SOPHISTICATED TRIPLE ANNOTATION SYSTEM ===\n")
+
+# ==============================================================================
+# CONFIGURATION AND SETUP
+# ==============================================================================
+
+CONFIG <- list(
+  # File paths - UPDATE TO YOUR SYSTEM
+  base_path = "/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/combined_gene_modules",
+  
+  # FindMarkers thresholds
+  findmarkers = list(
+    min_pct = 0.25,
+    logfc_threshold = 0.25,
+    high_conf_markers = 3,
+    medium_conf_markers = 1,
+    max_cells_per_ident = 500
+  ),
+  
+  # Manual signature thresholds (z-score based)
+  manual_signatures = list(
+    min_genes = 3,
+    ctrl_size = 100,
+    high_conf_zscore = 1.5,    # 1.5 SD above mean
+    medium_conf_zscore = 1.0,  # 1.0 SD above mean
+    low_conf_zscore = 0.5      # 0.5 SD above mean
+  ),
+  
+  # Hybrid signature thresholds (z-score based)
+  hybrid_signatures = list(
+    strong_zscore = 1.0,       # 1.0 SD above mean
+    moderate_zscore = 0.5,     # 0.5 SD above mean
+    weak_zscore = 0.2          # 0.2 SD above mean
+  ),
+  
+  # Analysis options
+  save_plots = TRUE,
+  save_intermediate = TRUE,
+  verbose = TRUE,
+  filter_ribosomal = TRUE,
+  filter_mitochondrial = TRUE
+)
+
+# ==============================================================================
+# UTILITY FUNCTIONS
+# ==============================================================================
+
+# Load hybrid modules with error handling
+load_combo_module <- function(filepath, module_name) {
+  if (file.exists(filepath)) {
+    tryCatch({
+      module_data <- read.csv(filepath, stringsAsFactors = FALSE)
+      up_genes <- module_data$Gene[module_data$Regulation == "Up"]
+      down_genes <- module_data$Gene[module_data$Regulation == "Down"]
+      
+      if (CONFIG$verbose) {
+        cat(sprintf("%s module: Up = %d, Down = %d\n", 
+                   module_name, length(up_genes), length(down_genes)))
+      }
+      return(list(up = up_genes, down = down_genes))
+    }, error = function(e) {
+      cat(sprintf("Error loading %s: %s\n", filepath, e$message))
+      return(list(up = character(0), down = character(0)))
+    })
+  } else {
+    if (CONFIG$verbose) cat(sprintf("WARNING: File not found: %s\n", filepath))
+    return(list(up = character(0), down = character(0)))
+  }
+}
+
+# Filter out problematic genes
+filter_problematic_genes <- function(gene_list) {
+  if (CONFIG$filter_ribosomal) {
+    gene_list <- gene_list[!grepl("^RP[SL]", gene_list)]
+  }
+  if (CONFIG$filter_mitochondrial) {
+    gene_list <- gene_list[!grepl("^MT-", gene_list)]
+  }
+  return(gene_list)
+}
+
+# ==============================================================================
+# DATA LOADING AND SIGNATURE PREPARATION
+# ==============================================================================
+
+cat("Loading and preparing gene signatures...\n")
+
+# Load hybrid modules
+chc1_module <- load_combo_module(file.path(CONFIG$base_path, "CHC1_Combined_genes.csv"), "CHC1")
+chc2_module <- load_combo_module(file.path(CONFIG$base_path, "CHC2_Combined_genes.csv"), "CHC2")
+chc3_module <- load_combo_module(file.path(CONFIG$base_path, "CHC3_Combined_genes.csv"), "CHC3")
+thc_module <- load_combo_module(file.path(CONFIG$base_path, "THC_Combined_genes.csv"), "THC")
+
+# Define comprehensive manual signatures
+manual_signatures <- list(
+  # T cell signatures
+  "CD4_T_cells" = c("CD3D", "CD3E", "CD4", "IL7R", "CCR7", "LEF1", "TCF7", "SELL", "CD28"),
+  "CD8_T_cells" = c("CD3D", "CD3E", "CD8A", "CD8B", "CCL5", "GZMA", "GZMB", "PRF1", "CD27"),
+  "Memory_T_cells" = c("IL7R", "CCR7", "CD45RO", "SELL", "TCF7", "LEF1", "CD44", "CD28"),
+  "Naive_T_cells" = c("CCR7", "SELL", "TCF7", "LEF1", "IL7R", "CD45RA", "CD62L"),
+  "Regulatory_T_cells" = c("FOXP3", "IL2RA", "CTLA4", "IKZF2", "TIGIT", "CD25", "ICOS"),
+  "Exhausted_T_cells" = c("PDCD1", "CTLA4", "TIGIT", "LAG3", "HAVCR2", "TOX", "CD244"),
+  
+  # B cell signatures
+  "B_cells" = c("MS4A1", "CD79A", "CD79B", "CD19", "PAX5", "BLK", "FCRLA", "TCL1A"),
+  "Naive_B_cells" = c("MS4A1", "CD79A", "TCL1A", "FCRLA", "CD19", "IGHD", "CD38"),
+  "Memory_B_cells" = c("MS4A1", "CD79A", "CD27", "CD38", "IGHG1", "IGHG3"),
+  "Plasma_cells" = c("IGKC", "IGLC2", "IGLC3", "XBP1", "IRF4", "PRDM1", "CD38", "CD138"),
+  "Plasmablasts" = c("XBP1", "IRF4", "PRDM1", "CD38", "CD27", "IGHG1"),
+  
+  # Myeloid signatures
+  "CD14_Monocytes" = c("CD14", "LYZ", "S100A9", "S100A8", "FCN1", "VCAN", "CD68"),
+  "CD16_Monocytes" = c("FCGR3A", "MS4A7", "CDKN1C", "VMO1", "CKB", "CD16", "RHOC"),
+  "Intermediate_Monocytes" = c("CD14", "FCGR3A", "CD68", "CCR2", "CX3CR1"),
+  "Classical_Monocytes" = c("CD14", "CCR2", "CD68", "S100A8", "S100A9"),
+  "Macrophages_M0" = c("CD68", "CD163", "MSR1", "MRC1", "CSF1R", "ADGRE1", "LYZ"),
+  "M1_Macrophages" = c("CD86", "IL1B", "TNF", "CXCL10", "IL6", "NOS2", "CD80", "STAT1", "IRF1"),
+  "M2_Macrophages" = c("ARG1", "IL10", "MRC1", "CD163", "TGFB1", "IL1RN", "STAT6", "MAF", "CD206"),
+  "M2a_Macrophages" = c("ARG1", "IL10", "MRC1", "CD163", "IL1RN", "CLEC10A"),
+  "M2b_Macrophages" = c("IL10", "IL1B", "TNF", "CD86", "FCGR2B", "SOCS3"),
+  "M2c_Macrophages" = c("IL10", "TGFB1", "ARG1", "STAT3", "SOCS3"),
+  "Tumor_Associated_Macrophages" = c("CD163", "CD206", "ARG1", "IL10", "VEGFA", "MMP9", "CSF1R"),
+  
+  # NK cells
+  "NK_cells" = c("GNLY", "NKG7", "GZMA", "GZMB", "PRF1", "KLRD1", "KLRF1", "NCAM1", "CD16"),
+  "NK_cells_CD56bright" = c("NCAM1", "CD56", "IL7R", "KIT", "GZMA"),
+  "NK_cells_CD56dim" = c("FCGR3A", "CD16", "GZMB", "PRF1", "KLRD1"),
+  
+  # Dendritic cells
+  "Conventional_DC1" = c("CLEC9A", "XCR1", "CADM1", "NECTIN2", "SNX22"),
+  "Conventional_DC2" = c("CD1C", "FCER1A", "CST3", "CLEC10A", "HLA-DRA"),
+  "Plasmacytoid_DC" = c("LILRA4", "TLR7", "ITM2C", "IRF7", "CLEC4C", "TCF4"),
+  "Monocyte_derived_DC" = c("CD14", "CD68", "S100A8", "FCER1A", "CD1C"),
+  
+  # Granulocytes
+  "Neutrophils" = c("FCGR3B", "CXCR1", "CXCR2", "S100A12", "CEACAM8", "CSF3R"),
+  "Eosinophils" = c("SIGLEC8", "CCR3", "IL5RA", "CLC", "RNASE3"),
+  "Basophils" = c("FCER1A", "CPA3", "TPSAB1", "HDC", "IL4"),
+  
+  # Stromal cells
+  "CAF_Inflammatory" = c("IL6", "IL8", "CXCL1", "CXCL2", "CCL2", "PDGFRA", "FAP", "CXCL12"),
+  "CAF_Myofibroblastic" = c("ACTA2", "TAGLN", "MYL9", "MYLK", "TPM2", "CNN1", "CALD1", "ACTG2"),
+  "CAF_Matrix" = c("COL1A1", "COL1A2", "COL3A1", "COL5A1", "COL6A1", "FN1", "SPARC", "BGN"),
+  "CAF_Contractile" = c("ACTA2", "MYH11", "TAGLN", "MYLK", "CNN1", "TPM1", "TPM2"),
+  "CAF_Antigen_presenting" = c("HLA-DRA", "HLA-DRB1", "CD74", "CXCL12", "CFD"),
+  "CAF_Cycling" = c("MKI67", "TOP2A", "PCNA", "CDK1", "CCNB1"),
+  
+  # Epithelial cells
+  "Epithelial_General" = c("EPCAM", "CDH1", "KRT8", "KRT18", "KRT19", "CLDN3", "CLDN4", "OCLN"),
+  "Colonocytes" = c("CDX2", "KRT20", "MUC2", "TFF3", "FABP1", "CA2", "AQP8", "CEACAM6"),
+  "Goblet_cells" = c("MUC2", "TFF3", "CLCA1", "AGR2", "SPDEF", "FCGBP", "ATOH1"),
+  "Enterocytes" = c("FABP1", "APOA1", "APOA4", "SI", "ALPI", "SLC26A3", "GUCA2A"),
+  "Enteroendocrine_cells" = c("CHGA", "CHGB", "TPH1", "GCG", "SST", "CCK"),
+  "Paneth_cells" = c("LYZ", "DEFA5", "DEFA6", "CAMP", "REG3A"),
+  "Tuft_cells" = c("DCLK1", "TRPM5", "GFI1B", "IL25", "PTGS1"),
+  
+  # Tumor cells
+  "CRC_Tumor_cells" = c("CEACAM5", "CEACAM6", "MYC", "KRAS", "REG4", "SOX9", "CDX1", "LGR5"),
+  "Cancer_Stem_cells" = c("LGR5", "ASCL2", "OLFM4", "SMOC2", "CD44", "CD133", "ALDH1A1", "BMI1"),
+  "Proliferative_Cancer" = c("MKI67", "PCNA", "TOP2A", "MCM2", "MCM6", "CCNA2", "CCNB1"),
+  "EMT_Cancer" = c("VIM", "ZEB1", "ZEB2", "SNAI1", "SNAI2", "TWIST1", "CDH2", "FN1"),
+  "Invasive_Cancer" = c("MMP1", "MMP2", "MMP9", "MMP11", "TIMP1", "PLAU", "SERPINE1"),
+  
+  # Endothelial and vascular
+  "Endothelial_cells" = c("PECAM1", "VWF", "CDH5", "PTPRB", "FLT1", "KDR", "TEK", "CLDN5"),
+  "Arterial_Endothelial" = c("GJA5", "BMX", "DKK2", "EFNB2"),
+  "Venous_Endothelial" = c("NR2F2", "APLNR", "ACKR1"),
+  "Lymphatic_Endothelial" = c("PROX1", "CCL21", "LYVE1", "FLT4"),
+  "Pericytes" = c("PDGFRB", "ACTA2", "NG2", "RGS5", "MCAM", "NOTCH3", "CSPG4"),
+  "Smooth_muscle" = c("ACTA2", "MYH11", "TAGLN", "MYLK", "CNN1", "SMTN", "ACTG2"),
+  
+  # Other cell types
+  "Platelets" = c("PPBP", "PF4", "GNG11", "NRGN", "GP9", "TUBB1", "ITGA2B"),
+  "Mast_cells" = c("TPSAB1", "CPA3", "HDC", "KIT", "FCER1A"),
+  "Mesenchymal_Stem_cells" = c("THY1", "ENG", "NT5E", "ALCAM", "PDGFRA")
+)
+
+# Apply filtering to manual signatures
+manual_signatures <- lapply(manual_signatures, filter_problematic_genes)
+
+# Filter signatures by gene availability
+available_genes <- rownames(merged_seurat_hmm)
+filtered_manual_signatures <- lapply(manual_signatures, function(genes) {
+  present_genes <- genes[genes %in% available_genes]
+  if (length(present_genes) >= CONFIG$manual_signatures$min_genes) present_genes else NULL
+})
+filtered_manual_signatures <- filtered_manual_signatures[!sapply(filtered_manual_signatures, is.null)]
+
+if (CONFIG$verbose) {
+  cat(sprintf("Manual signatures: %d total, %d with ≥%d genes available\n", 
+             length(manual_signatures), length(filtered_manual_signatures), 
+             CONFIG$manual_signatures$min_genes))
+}
+
+# Create hybrid signatures (SOPHISTICATED APPROACH - YOUR PROVEN METHOD)
+hybrid_signatures <- list()
+combo_types <- c("CHC1", "CHC2", "CHC3", "THC")
+modules <- list(chc1_module, chc2_module, chc3_module, thc_module)
+
+for (i in seq_along(combo_types)) {
+  combo_type <- combo_types[i]
+  module <- modules[[i]]
+  
+  # Create separate Up/Down for combo calculation (CRITICAL for sophisticated method)
+  if (length(module$up) > 0) {
+    hybrid_signatures[[paste0(combo_type, "_Up")]] <- filter_problematic_genes(module$up)
+  }
+  if (length(module$down) > 0) {
+    hybrid_signatures[[paste0(combo_type, "_Down")]] <- filter_problematic_genes(module$down)
+  }
+  
+  # Also create combined signature for alternative analysis
+  if (length(module$up) > 0 || length(module$down) > 0) {
+    hybrid_signatures[[combo_type]] <- filter_problematic_genes(c(module$up, module$down))
+  }
+}
+
+# Filter hybrid signatures by availability
+filtered_hybrid_signatures <- lapply(hybrid_signatures, function(genes) {
+  present_genes <- genes[genes %in% available_genes]
+  if (length(present_genes) >= CONFIG$manual_signatures$min_genes) present_genes else NULL
+})
+filtered_hybrid_signatures <- filtered_hybrid_signatures[!sapply(filtered_hybrid_signatures, is.null)]
+
+if (CONFIG$verbose) {
+  cat(sprintf("Hybrid signatures: %d total, %d with ≥%d genes available\n", 
+             length(hybrid_signatures), length(filtered_hybrid_signatures),
+             CONFIG$manual_signatures$min_genes))
+}
+
+# ==============================================================================
+# METHOD 1: SOPHISTICATED FINDMARKERS ANALYSIS
+# ==============================================================================
+
+cat("\n=== METHOD 1: SOPHISTICATED FINDMARKERS ANALYSIS ===\n")
+
+# Load or run FindMarkers
+if (file.exists("sophisticated_findmarkers_results.csv")) {
+  all_markers <- read.csv("sophisticated_findmarkers_results.csv", stringsAsFactors = FALSE)
+  all_markers$cluster <- as.character(all_markers$cluster)
+  cat("Loaded existing sophisticated FindMarkers results\n")
+} else {
+  cat("Running sophisticated FindMarkers analysis...\n")
+  
+  all_markers <- FindAllMarkers(
+    merged_seurat_hmm,
+    only.pos = TRUE,
+    min.pct = CONFIG$findmarkers$min_pct,
+    logfc.threshold = CONFIG$findmarkers$logfc_threshold,
+    test.use = "wilcox",
+    max.cells.per.ident = CONFIG$findmarkers$max_cells_per_ident,
+    return.thresh = 0.01,
+    verbose = CONFIG$verbose
+  )
+  all_markers$cluster <- as.character(all_markers$cluster)
+  
+  if (CONFIG$save_intermediate) {
+    write.csv(all_markers, "sophisticated_findmarkers_results.csv", row.names = FALSE)
+  }
+}
+
+# Enhanced cell type inference (FIXED)
+infer_cell_type_from_markers <- function(top_genes, cluster_id) {
+  markers_str <- paste(tolower(top_genes), collapse = " ")
+  confidence_scores <- numeric(0)  # Initialize as numeric vector, not list
+  confidence_names <- character(0)  # Store names separately
+  
+  # T cell family
+  if (any(grepl("cd3d|cd3e|cd3g", markers_str))) {
+    if (any(grepl("cd4", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.9)
+      confidence_names <- c(confidence_names, "CD4+ T cells")
+    }
+    if (any(grepl("cd8a|cd8b", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.9)
+      confidence_names <- c(confidence_names, "CD8+ T cells")
+    }
+    if (any(grepl("foxp3|il2ra|ctla4", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Regulatory T cells")
+    }
+    if (any(grepl("il7r|ccr7|sell", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Memory T cells")
+    }
+    # Add general T cell if no specific subtype detected
+    if (length(confidence_scores) == 0 || max(confidence_scores) < 0.8) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "T cells")
+    }
+  }
+  
+  # B cell family
+  if (any(grepl("ms4a1|cd79a|cd79b|cd19", markers_str))) {
+    if (any(grepl("igkc|iglc|xbp1|prdm1", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.9)
+      confidence_names <- c(confidence_names, "Plasma cells")
+    } else if (any(grepl("cd27|cd38", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Memory B cells")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "B cells")
+    }
+  }
+  
+  # Myeloid family
+  if (any(grepl("cd14|lyz|s100a8|s100a9", markers_str))) {
+    if (any(grepl("fcgr3a", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "CD16+ Monocytes")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "CD14+ Monocytes")
+    }
+  }
+  
+  if (any(grepl("cd68|cd163|msr1|mrc1", markers_str))) {
+    if (any(grepl("arg1|il10|cd163", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "M2 Macrophages")
+    } else if (any(grepl("il1b|tnf|cd86", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "M1 Macrophages")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Macrophages")
+    }
+  }
+  
+  # NK cells
+  if (any(grepl("gnly|nkg7|klrd1|ncam1", markers_str))) {
+    confidence_scores <- c(confidence_scores, 0.8)
+    confidence_names <- c(confidence_names, "NK cells")
+  }
+  
+  # Dendritic cells
+  if (any(grepl("fcer1a|clec10a|cd1c", markers_str))) {
+    if (any(grepl("lilra4|irf7", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Plasmacytoid DCs")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Dendritic cells")
+    }
+  }
+  
+  # Epithelial cells
+  if (any(grepl("epcam|krt8|krt18|krt19", markers_str))) {
+    if (any(grepl("muc2|tff3|goblet", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Goblet cells")
+    } else if (any(grepl("cdx2|fabp1", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Colonocytes")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Epithelial cells")
+    }
+  }
+  
+  # CAFs/Fibroblasts
+  if (any(grepl("col1a1|col1a2|col3a1|pdgfra", markers_str))) {
+    if (any(grepl("acta2|tagln|mylk", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Myofibroblastic CAFs")
+    } else if (any(grepl("il6|il8|cxcl", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Inflammatory CAFs")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "CAFs")
+    }
+  }
+  
+  # Endothelial
+  if (any(grepl("pecam1|vwf|cdh5", markers_str))) {
+    confidence_scores <- c(confidence_scores, 0.8)
+    confidence_names <- c(confidence_names, "Endothelial cells")
+  }
+  
+  # Tumor cells
+  if (any(grepl("ceacam5|ceacam6|reg4|sox9", markers_str))) {
+    if (any(grepl("ki67|pcna|top2a", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Proliferative cancer cells")
+    } else if (any(grepl("lgr5|cd44|aldh1a1", markers_str))) {
+      confidence_scores <- c(confidence_scores, 0.8)
+      confidence_names <- c(confidence_names, "Cancer stem cells")
+    } else {
+      confidence_scores <- c(confidence_scores, 0.7)
+      confidence_names <- c(confidence_names, "Tumor cells")
+    }
+  }
+  
+  # Other
+  if (any(grepl("ppbp|pf4|gng11", markers_str))) {
+    confidence_scores <- c(confidence_scores, 0.8)
+    confidence_names <- c(confidence_names, "Platelets")
+  }
+  
+  # Return best match or uncharacterized
+  if (length(confidence_scores) > 0) {
+    best_idx <- which.max(confidence_scores)
+    best_match <- confidence_names[best_idx]
+    best_confidence <- confidence_scores[best_idx]
+    
+    return(list(
+      annotation = best_match,
+      confidence = best_confidence,
+      evidence = paste(top_genes[1:min(3, length(top_genes))], collapse = "+")
+    ))
+  } else {
+    return(list(
+      annotation = paste("Uncharacterized cluster", cluster_id),
+      confidence = 0,
+      evidence = paste(top_genes[1:min(2, length(top_genes))], collapse = "+")
+    ))
+  }
+}
+
+# Get sophisticated FindMarkers annotation
+get_sophisticated_findmarkers_annotation <- function(cluster_id, markers_data) {
+  cluster_markers <- markers_data %>%
+    filter(cluster == cluster_id, p_val_adj < 0.05) %>%
+    arrange(p_val_adj, desc(avg_log2FC))
+  
+  if (nrow(cluster_markers) == 0) {
+    return(list(
+      annotation = paste("Cluster", cluster_id),
+      confidence = 0,
+      biological_confidence = 0,
+      method = "No significant markers",
+      evidence = "No markers found",
+      n_markers = 0
+    ))
+  }
+  
+  n_sig_markers <- nrow(cluster_markers)
+  top_genes <- cluster_markers$gene[1:min(10, nrow(cluster_markers))]
+  
+  inference_result <- infer_cell_type_from_markers(top_genes, cluster_id)
+  
+  marker_confidence <- case_when(
+    n_sig_markers >= CONFIG$findmarkers$high_conf_markers ~ "High",
+    n_sig_markers >= CONFIG$findmarkers$medium_conf_markers ~ "Medium",
+    TRUE ~ "Low"
+  )
+  
+  return(list(
+    annotation = inference_result$annotation,
+    confidence = n_sig_markers,
+    biological_confidence = inference_result$confidence,
+    method = paste("FindMarkers", marker_confidence),
+    evidence = inference_result$evidence,
+    n_markers = n_sig_markers
+  ))
+}
+
+# ==============================================================================
+# METHOD 2: SOPHISTICATED MANUAL SIGNATURE ANALYSIS
+# ==============================================================================
+
+cat("\n=== METHOD 2: SOPHISTICATED MANUAL SIGNATURE ANALYSIS ===\n")
+
+# Add module scores for manual signatures
+score_cols <- grep("_Score1$", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+manual_score_pattern <- paste(names(filtered_manual_signatures), collapse = "|")
+existing_manual_scores <- score_cols[grepl(manual_score_pattern, score_cols)]
+
+if (length(existing_manual_scores) == 0) {
+  cat("Adding module scores for manual signatures...\n")
+  
+  merged_seurat_hmm <- AddModuleScore(
+    merged_seurat_hmm,
+    features = filtered_manual_signatures,
+    name = names(filtered_manual_signatures),
+    ctrl = CONFIG$manual_signatures$ctrl_size,
+    seed = 42
+  )
+  
+  cat("✓ Manual signature module scores added\n")
+}
+
+# Z-score normalization for manual signatures
+cat("Applying z-score normalization to manual signatures...\n")
+
+all_score_cols <- grep("_Score1$", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+all_score_names <- gsub("_Score1$", "", all_score_cols)
+
+# Filter to only manual signatures (exclude hybrid signatures)
+manual_signature_names <- names(filtered_manual_signatures)
+manual_only_scores <- all_score_cols[all_score_names %in% manual_signature_names]
+
+if (CONFIG$verbose) {
+  cat(sprintf("Found %d manual signature score columns to normalize\n", length(manual_only_scores)))
+}
+
+for (score_col in manual_only_scores) {
+  zscore_col <- paste0(score_col, "_zscore")
+  
+  if (score_col %in% colnames(merged_seurat_hmm@meta.data)) {
+    scores <- merged_seurat_hmm@meta.data[, score_col]
+    z_scores <- scale(scores)[,1]
+    merged_seurat_hmm@meta.data[, zscore_col] <- z_scores
+    
+    if (CONFIG$verbose) {
+      sig_name <- gsub("_Score1$", "", score_col)
+      cat(sprintf("  %s: Mean %.3f -> %.3f, SD %.3f -> %.3f\n", 
+                  sig_name, mean(scores, na.rm = TRUE), mean(z_scores, na.rm = TRUE), 
+                  sd(scores, na.rm = TRUE), sd(z_scores, na.rm = TRUE)))
+    }
+  }
+}
+
+# Get sophisticated manual annotation
+get_sophisticated_manual_annotation <- function(cluster_id) {
+  cluster_cells <- merged_seurat_hmm$seurat_clusters == cluster_id
+  
+  zscore_cols <- paste0(manual_only_scores, "_zscore")
+  existing_zscore_cols <- intersect(zscore_cols, colnames(merged_seurat_hmm@meta.data))
+  
+  if (length(existing_zscore_cols) == 0) {
+    return(list(
+      annotation = "No manual signature data",
+      confidence = 0,
+      confidence_level = "None",
+      method = "No data",
+      evidence = "Missing z-scores",
+      n_high_conf = 0,
+      n_medium_conf = 0,
+      all_positive_sigs = character(0)
+    ))
+  }
+  
+  cluster_zscores <- merged_seurat_hmm@meta.data[cluster_cells, existing_zscore_cols, drop = FALSE]
+  mean_zscores <- apply(cluster_zscores, 2, mean, na.rm = TRUE)
+  
+  # Clean signature names
+  names(mean_zscores) <- gsub("_Score1_zscore$", "", names(mean_zscores))
+  
+  # Find signatures above different thresholds
+  high_conf_sigs <- names(mean_zscores)[mean_zscores >= CONFIG$manual_signatures$high_conf_zscore]
+  medium_conf_sigs <- names(mean_zscores)[mean_zscores >= CONFIG$manual_signatures$medium_conf_zscore]
+  low_conf_sigs <- names(mean_zscores)[mean_zscores >= CONFIG$manual_signatures$low_conf_zscore]
+  
+  # Determine best annotation and confidence
+  if (length(high_conf_sigs) > 0) {
+    best_sig <- names(which.max(mean_zscores[high_conf_sigs]))
+    best_score <- mean_zscores[best_sig]
+    confidence_level <- "High"
+    evidence <- paste0(best_sig, " (z=", round(best_score, 2), ")")
+    
+    if (length(high_conf_sigs) > 1) {
+      top_sigs <- high_conf_sigs[order(-mean_zscores[high_conf_sigs])][1:min(3, length(high_conf_sigs))]
+      evidence <- paste0(evidence, " + others: ", paste(top_sigs[-1], collapse = ", "))
+    }
+    
+  } else if (length(medium_conf_sigs) > 0) {
+    best_sig <- names(which.max(mean_zscores[medium_conf_sigs]))
+    best_score <- mean_zscores[best_sig]
+    confidence_level <- "Medium"
+    evidence <- paste0(best_sig, " (z=", round(best_score, 2), ")")
+    
+  } else if (length(low_conf_sigs) > 0) {
+    best_sig <- names(which.max(mean_zscores[low_conf_sigs]))
+    best_score <- mean_zscores[best_sig]
+    confidence_level <- "Low"
+    evidence <- paste0(best_sig, " (z=", round(best_score, 2), ")")
+    
+  } else {
+    best_sig <- "Uncharacterized"
+    best_score <- max(mean_zscores, na.rm = TRUE)
+    confidence_level <- "None"
+    evidence <- paste0("Max z-score: ", round(best_score, 2))
+  }
+  
+  return(list(
+    annotation = best_sig,
+    confidence = best_score,
+    confidence_level = confidence_level,
+    method = paste("Manual signatures", confidence_level),
+    evidence = evidence,
+    n_high_conf = length(high_conf_sigs),
+    n_medium_conf = length(medium_conf_sigs),
+    all_positive_sigs = c(high_conf_sigs, medium_conf_sigs, low_conf_sigs)
+  ))
+}
+
+# ==============================================================================
+# METHOD 3: SOPHISTICATED HYBRID ANALYSIS (YOUR PROVEN APPROACH)
+# ==============================================================================
+
+cat("\n=== METHOD 3: SOPHISTICATED HYBRID ANALYSIS ===\n")
+
+# Add module scores for hybrid signatures
+hybrid_score_cols <- grep("_Score1$", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+hybrid_score_pattern <- paste(names(filtered_hybrid_signatures), collapse = "|")
+existing_hybrid_scores <- hybrid_score_cols[grepl(hybrid_score_pattern, hybrid_score_cols)]
+
+if (length(existing_hybrid_scores) == 0) {
+  cat("Adding module scores for hybrid signatures...\n")
+  
+  merged_seurat_hmm <- AddModuleScore(
+    merged_seurat_hmm,
+    features = filtered_hybrid_signatures,
+    name = names(filtered_hybrid_signatures),
+    ctrl = CONFIG$manual_signatures$ctrl_size,
+    seed = 42
+  )
+  
+  cat("✓ Hybrid signature module scores added\n")
+}
+
+# CRITICAL: Create combo scores (Up - Down) - The sophisticated approach
+cat("Creating sophisticated combo scores (Up - Down)...\n")
+
+for (combo_type in combo_types) {
+  up_col <- paste0(combo_type, "_Up_Score1")
+  down_col <- paste0(combo_type, "_Down_Score1")
+  combo_col <- paste0(combo_type, "_Combo_Score")
+  
+  if (up_col %in% colnames(merged_seurat_hmm@meta.data) && 
+      down_col %in% colnames(merged_seurat_hmm@meta.data)) {
+    
+    merged_seurat_hmm@meta.data[[combo_col]] <- 
+      merged_seurat_hmm@meta.data[[up_col]] - merged_seurat_hmm@meta.data[[down_col]]
+    
+    if (CONFIG$verbose) {
+      combo_mean <- mean(merged_seurat_hmm@meta.data[[combo_col]])
+      combo_sd <- sd(merged_seurat_hmm@meta.data[[combo_col]])
+      cat(sprintf("  %s: Mean = %.3f, SD = %.3f\n", combo_col, combo_mean, combo_sd))
+    }
+  }
+}
+
+# Z-score normalization for combo scores
+cat("Applying z-score normalization to hybrid combo scores...\n")
+
+combo_cols <- paste0(combo_types, "_Combo_Score")
+existing_combo_cols <- intersect(combo_cols, colnames(merged_seurat_hmm@meta.data))
+
+for (combo_col in existing_combo_cols) {
+  zscore_col <- paste0(combo_col, "_zscore")
+  scores <- merged_seurat_hmm@meta.data[, combo_col]
+  z_scores <- scale(scores)[,1]
+  merged_seurat_hmm@meta.data[, zscore_col] <- z_scores
+  
+  if (CONFIG$verbose) {
+    combo_type <- gsub("_Combo_Score", "", combo_col)
+    cat(sprintf("  %s: Mean %.3f -> %.3f, SD %.3f -> %.3f\n", 
+                combo_type, mean(scores), mean(z_scores), sd(scores), sd(z_scores)))
+  }
+}
+
+# Get sophisticated hybrid annotation
+get_sophisticated_hybrid_annotation <- function(cluster_id) {
+  cluster_cells <- merged_seurat_hmm$seurat_clusters == cluster_id
+  
+  zscore_cols <- paste0(existing_combo_cols, "_zscore")
+  existing_zscore_cols <- intersect(zscore_cols, colnames(merged_seurat_hmm@meta.data))
+  
+  if (length(existing_zscore_cols) == 0) {
+    return(list(
+      annotation = "No hybrid data",
+      confidence = 0,
+      confidence_level = "None",
+      method = "No data",
+      evidence = "Missing combo scores",
+      n_strong = 0,
+      n_moderate = 0,
+      all_positive_hybrids = character(0),
+      all_scores = numeric(0)
+    ))
+  }
+  
+  cluster_zscores <- merged_seurat_hmm@meta.data[cluster_cells, existing_zscore_cols, drop = FALSE]
+  mean_zscores <- apply(cluster_zscores, 2, mean, na.rm = TRUE)
+  
+  names(mean_zscores) <- gsub("_Combo_Score_zscore", "", names(mean_zscores))
+  
+  strong_hybrids <- names(mean_zscores)[mean_zscores >= CONFIG$hybrid_signatures$strong_zscore]
+  moderate_hybrids <- names(mean_zscores)[mean_zscores >= CONFIG$hybrid_signatures$moderate_zscore]
+  weak_hybrids <- names(mean_zscores)[mean_zscores >= CONFIG$hybrid_signatures$weak_zscore]
+  
+  if (length(strong_hybrids) > 0) {
+    best_hybrid <- names(which.max(mean_zscores[strong_hybrids]))
+    best_score <- mean_zscores[best_hybrid]
+    confidence_level <- "Strong"
+    
+    if (length(strong_hybrids) > 1) {
+      all_strong <- paste(strong_hybrids, collapse = "+")
+      annotation <- paste("Multi-hybrid", all_strong)
+      evidence <- paste0("Multiple strong: ", paste(paste0(strong_hybrids, "(", round(mean_zscores[strong_hybrids], 2), ")"), collapse = ", "))
+    } else {
+      annotation <- paste("Hybrid", best_hybrid)
+      evidence <- paste0(best_hybrid, " (z=", round(best_score, 2), ")")
+    }
+    
+  } else if (length(moderate_hybrids) > 0) {
+    best_hybrid <- names(which.max(mean_zscores[moderate_hybrids]))
+    best_score <- mean_zscores[best_hybrid]
+    confidence_level <- "Moderate"
+    annotation <- paste("Potential hybrid", best_hybrid)
+    evidence <- paste0(best_hybrid, " (z=", round(best_score, 2), ")")
+    
+  } else if (length(weak_hybrids) > 0) {
+    best_hybrid <- names(which.max(mean_zscores[weak_hybrids]))
+    best_score <- mean_zscores[best_hybrid]
+    confidence_level <- "Weak"
+    annotation <- paste("Weak hybrid", best_hybrid)
+    evidence <- paste0(best_hybrid, " (z=", round(best_score, 2), ")")
+    
+  } else {
+    best_score <- max(mean_zscores, na.rm = TRUE)
+    confidence_level <- "None"
+    annotation <- "No hybrid signature"
+    evidence <- paste0("Max z-score: ", round(best_score, 2))
+  }
+  
+  return(list(
+    annotation = annotation,
+    confidence = best_score,
+    confidence_level = confidence_level,
+    method = paste("Hybrid combo", confidence_level),
+    evidence = evidence,
+    n_strong = length(strong_hybrids),
+    n_moderate = length(moderate_hybrids),
+    all_positive_hybrids = c(strong_hybrids, moderate_hybrids, weak_hybrids),
+    all_scores = mean_zscores
+  ))
+}
+
+# ==============================================================================
+# APPLY ALL THREE METHODS TO EACH CLUSTER
+# ==============================================================================
+
+cat("\n=== APPLYING TRIPLE ANNOTATION SYSTEM ===\n")
+
+unique_clusters <- sort(unique(as.character(merged_seurat_hmm$seurat_clusters)))
+n_clusters <- length(unique_clusters)
+
+# Initialize comprehensive results dataframe
+triple_results <- data.frame(
+  cluster = unique_clusters,
+  
+  # FindMarkers results
+  FM_annotation = character(n_clusters),
+  FM_confidence = numeric(n_clusters),
+  FM_bio_confidence = numeric(n_clusters),
+  FM_method = character(n_clusters),
+  FM_evidence = character(n_clusters),
+  FM_n_markers = numeric(n_clusters),
+  
+  # Manual signature results
+  MS_annotation = character(n_clusters),
+  MS_confidence = numeric(n_clusters),
+  MS_confidence_level = character(n_clusters),
+  MS_method = character(n_clusters),
+  MS_evidence = character(n_clusters),
+  MS_n_high_conf = numeric(n_clusters),
+  MS_n_medium_conf = numeric(n_clusters),
+  
+  # Hybrid results
+  HY_annotation = character(n_clusters),
+  HY_confidence = numeric(n_clusters),
+  HY_confidence_level = character(n_clusters),
+  HY_method = character(n_clusters),
+  HY_evidence = character(n_clusters),
+  HY_n_strong = numeric(n_clusters),
+  HY_n_moderate = numeric(n_clusters),
+  
+  stringsAsFactors = FALSE
+)
+
+# Process each cluster with all three methods
+cat("Processing clusters with triple annotation system...\n")
+
+for (i in seq_along(unique_clusters)) {
+  cluster_id <- unique_clusters[i]
+  
+  if (i %% 5 == 0) cat(sprintf("Processing cluster %s (%d/%d)\n", cluster_id, i, n_clusters))
+  
+  # Method 1: Sophisticated FindMarkers
+  fm_result <- get_sophisticated_findmarkers_annotation(cluster_id, all_markers)
+  triple_results$FM_annotation[i] <- fm_result$annotation
+  triple_results$FM_confidence[i] <- fm_result$confidence
+  triple_results$FM_bio_confidence[i] <- fm_result$biological_confidence
+  triple_results$FM_method[i] <- fm_result$method
+  triple_results$FM_evidence[i] <- fm_result$evidence
+  triple_results$FM_n_markers[i] <- fm_result$n_markers
+  
+  # Method 2: Sophisticated Manual Signatures
+  ms_result <- get_sophisticated_manual_annotation(cluster_id)
+  triple_results$MS_annotation[i] <- ms_result$annotation
+  triple_results$MS_confidence[i] <- ms_result$confidence
+  triple_results$MS_confidence_level[i] <- ms_result$confidence_level
+  triple_results$MS_method[i] <- ms_result$method
+  triple_results$MS_evidence[i] <- ms_result$evidence
+  triple_results$MS_n_high_conf[i] <- ms_result$n_high_conf
+  triple_results$MS_n_medium_conf[i] <- ms_result$n_medium_conf
+  
+  # Method 3: Sophisticated Hybrid Analysis
+  hy_result <- get_sophisticated_hybrid_annotation(cluster_id)
+  triple_results$HY_annotation[i] <- hy_result$annotation
+  triple_results$HY_confidence[i] <- hy_result$confidence
+  triple_results$HY_confidence_level[i] <- hy_result$confidence_level
+  triple_results$HY_method[i] <- hy_result$method
+  triple_results$HY_evidence[i] <- hy_result$evidence
+  triple_results$HY_n_strong[i] <- hy_result$n_strong
+  triple_results$HY_n_moderate[i] <- hy_result$n_moderate
+}
+
+cat("✓ Triple annotation analysis complete!\n")
+
+# ==============================================================================
+# RECONCILIATION AND FINAL ANNOTATIONS
+# ==============================================================================
+
+cat("\n=== CREATING FINAL RECONCILED ANNOTATIONS ===\n")
+
+# Create final reconciled annotation
+create_final_reconciled_annotation <- function(fm_data, ms_data, hy_data, cluster_id) {
+  
+  fm_annotation <- fm_data[["FM_annotation"]]
+  fm_conf_level <- case_when(
+    fm_data[["FM_n_markers"]] >= 5 ~ "High",
+    fm_data[["FM_n_markers"]] >= 2 ~ "Medium", 
+    TRUE ~ "Low"
+  )
+  
+  ms_annotation <- ms_data[["MS_annotation"]]
+  ms_conf_level <- ms_data[["MS_confidence_level"]]
+  
+  hy_annotation <- hy_data[["HY_annotation"]]
+  hy_conf_level <- hy_data[["HY_confidence_level"]]
+  
+  # Decision logic for final annotation
+  
+  # 1. Strong hybrid signal takes precedence
+  if (hy_conf_level == "Strong") {
+    return(list(
+      final_annotation = hy_annotation,
+      method = "Strong_hybrid_priority",
+      confidence = "High",
+      supporting_evidence = paste("Hybrid:", hy_data[["HY_evidence"]], "| MS:", ms_data[["MS_evidence"]])
+    ))
+  }
+  
+  # 2. Both conventional methods high confidence and compatible
+  if ((fm_conf_level == "High" && ms_conf_level == "High") ||
+      (fm_conf_level == "High" && ms_conf_level == "Medium" && !grepl("Uncharacterized", ms_annotation)) ||
+      (ms_conf_level == "High" && fm_conf_level == "Medium" && !grepl("Uncharacterized", fm_annotation))) {
+    
+    # Check compatibility
+    compatible <- grepl(tolower(gsub("[^a-zA-Z]", "", fm_annotation)), 
+                       tolower(gsub("[^a-zA-Z]", "", ms_annotation)), fixed = TRUE) ||
+                  grepl(tolower(gsub("[^a-zA-Z]", "", ms_annotation)), 
+                       tolower(gsub("[^a-zA-Z]", "", fm_annotation)), fixed = TRUE)
+    
+    if (compatible) {
+      # Use more specific annotation
+      if (grepl("Uncharacterized|^Cluster", fm_annotation) && !grepl("Uncharacterized", ms_annotation)) {
+        final_annotation <- ms_annotation
+        method <- "Manual_more_specific"
+      } else if (ms_conf_level == "High" && !grepl("General|broad", ms_annotation)) {
+        final_annotation <- ms_annotation
+        method <- "Manual_high_confidence"
+      } else {
+        final_annotation <- fm_annotation
+        method <- "FindMarkers_data_driven"
+      }
+      
+      # Add moderate hybrid if present
+      if (hy_conf_level %in% c("Moderate", "Weak")) {
+        final_annotation <- paste0(final_annotation, " + ", hy_annotation)
+        method <- paste0(method, "_with_hybrid")
+      }
+      
+      return(list(
+        final_annotation = final_annotation,
+        method = method,
+        confidence = "High",
+        supporting_evidence = paste("FM:", fm_data[["FM_evidence"]], "| MS:", ms_data[["MS_evidence"]])
+      ))
+    }
+  }
+  
+  # 3. Single method high confidence
+  if (ms_conf_level == "High" && !grepl("Uncharacterized", ms_annotation)) {
+    final_annotation <- ms_annotation
+    method <- "Manual_only_confident"
+    conf <- "Medium"
+  } else if (fm_conf_level == "High" && !grepl("Uncharacterized", fm_annotation)) {
+    final_annotation <- fm_annotation
+    method <- "FindMarkers_only_confident"
+    conf <- "Medium"
+  } else if (hy_conf_level == "Moderate") {
+    final_annotation <- hy_annotation
+    method <- "Moderate_hybrid_rescue"
+    conf <- "Medium"
+  } else {
+    # 4. Best effort with available information
+    if (ms_conf_level %in% c("Medium", "Low") && !grepl("Uncharacterized", ms_annotation)) {
+      final_annotation <- ms_annotation
+      method <- "Manual_medium_rescue"
+      conf <- "Low"
+    } else if (!grepl("Uncharacterized|^Cluster", fm_annotation)) {
+      final_annotation <- fm_annotation
+      method <- "FindMarkers_rescue"
+      conf <- "Low"
+    } else {
+      final_annotation <- paste("Uncharacterized cluster", cluster_id)
+      method <- "All_methods_insufficient"
+      conf <- "None"
+    }
+  }
+  
+  # Add weak hybrid if present and not already included
+  if (hy_conf_level %in% c("Moderate", "Weak") && !grepl("hybrid", final_annotation, ignore.case = TRUE)) {
+    final_annotation <- paste0(final_annotation, " + ", hy_annotation)
+    method <- paste0(method, "_with_hybrid")
+  }
+  
+  return(list(
+    final_annotation = final_annotation,
+    method = method,
+    confidence = conf,
+    supporting_evidence = paste("Best available evidence from", method)
+  ))
+}
+
+# Apply reconciliation
+cat("Applying sophisticated reconciliation...\n")
+
+for (i in 1:nrow(triple_results)) {
+  fm_data <- triple_results[i, grep("^FM_", colnames(triple_results))]
+  ms_data <- triple_results[i, grep("^MS_", colnames(triple_results))]
+  hy_data <- triple_results[i, grep("^HY_", colnames(triple_results))]
+  
+  reconciled <- create_final_reconciled_annotation(fm_data, ms_data, hy_data, triple_results$cluster[i])
+  
+  triple_results$Final_annotation[i] <- reconciled$final_annotation
+  triple_results$Final_method[i] <- reconciled$method
+  triple_results$Final_confidence[i] <- reconciled$confidence
+  triple_results$Final_evidence[i] <- reconciled$supporting_evidence
+}
+
+# Clean final annotations
+clean_annotation_names <- function(annotations) {
+  cleaned <- annotations
+  
+  cleaning_rules <- list(
+    c("CD4.*T.*cell", "CD4+ T cells"),
+    c("CD8.*T.*cell", "CD8+ T cells"),
+    c("B.*cell", "B cells"),
+    c("NK.*cell", "NK cells"),
+    c("Plasma.*cell", "Plasma cells"),
+    c("Dendritic.*cell", "Dendritic cells"),
+    c("Epithelial.*cell", "Epithelial cells"),
+    c("Endothelial.*cell", "Endothelial cells")
+  )
+  
+  for (rule in cleaning_rules) {
+    pattern <- rule[1]
+    replacement <- rule[2]
+    cleaned <- ifelse(grepl(pattern, cleaned, ignore.case = TRUE) & 
+                     !grepl("Hybrid|hybrid", cleaned), replacement, cleaned)
+  }
+  
+  cleaned
+}
+
+triple_results$Final_annotation_clean <- clean_annotation_names(triple_results$Final_annotation)
+
+# ==============================================================================
+# ADD RESULTS TO SEURAT OBJECT
+# ==============================================================================
+
+cat("\n=== ADDING RESULTS TO SEURAT OBJECT ===\n")
+
+seurat_clusters_char <- as.character(merged_seurat_hmm$seurat_clusters)
+cluster_mapping <- setNames(triple_results$Final_annotation_clean, triple_results$cluster)
+
+# Add all annotation results to Seurat object
+merged_seurat_hmm@meta.data$FindMarkers_Sophisticated <- 
+  setNames(triple_results$FM_annotation, triple_results$cluster)[seurat_clusters_char]
+
+merged_seurat_hmm@meta.data$Manual_Signatures_Sophisticated <- 
+  setNames(triple_results$MS_annotation, triple_results$cluster)[seurat_clusters_char]
+
+merged_seurat_hmm@meta.data$Hybrid_Sophisticated <- 
+  setNames(triple_results$HY_annotation, triple_results$cluster)[seurat_clusters_char]
+
+merged_seurat_hmm@meta.data$Final_Sophisticated_Annotation <- 
+  cluster_mapping[seurat_clusters_char]
+
+# Add confidence and method information
+merged_seurat_hmm@meta.data$Final_Annotation_Method <- 
+  setNames(triple_results$Final_method, triple_results$cluster)[seurat_clusters_char]
+
+merged_seurat_hmm@meta.data$Final_Annotation_Confidence <- 
+  setNames(triple_results$Final_confidence, triple_results$cluster)[seurat_clusters_char]
+
+cat("✓ All annotation results added to Seurat object\n")
+
+# ==============================================================================
+# ANALYSIS AND VISUALIZATION
+# ==============================================================================
+
+cat("\n=== COMPREHENSIVE ANALYSIS ===\n")
+
+# Method-specific summaries
+create_method_summary <- function(annotations, method_name) {
+  counts <- table(annotations)
+  data.frame(
+    Cell_type = names(counts),
+    Cell_count = as.numeric(counts),
+    Percentage = round(as.numeric(counts) / length(annotations) * 100, 2),
+    Method = method_name,
+    stringsAsFactors = FALSE
+  ) %>% arrange(desc(Cell_count))
+}
+
+fm_summary <- create_method_summary(merged_seurat_hmm$FindMarkers_Sophisticated, "FindMarkers")
+ms_summary <- create_method_summary(merged_seurat_hmm$Manual_Signatures_Sophisticated, "Manual Signatures")
+hy_summary <- create_method_summary(merged_seurat_hmm$Hybrid_Sophisticated, "Hybrid Analysis")
+final_summary <- create_method_summary(merged_seurat_hmm$Final_Sophisticated_Annotation, "Final Reconciled")
+
+# Print summaries
+cat("\n=== FINDMARKERS SOPHISTICATED RESULTS ===\n")
+print(fm_summary)
+
+cat("\n=== MANUAL SIGNATURES SOPHISTICATED RESULTS ===\n")
+print(ms_summary)
+
+cat("\n=== HYBRID SOPHISTICATED RESULTS ===\n")
+print(hy_summary)
+
+cat("\n=== FINAL RECONCILED ANNOTATION RESULTS ===\n")
+print(final_summary)
+
+# Hybrid detection analysis
+hybrid_cells <- final_summary %>% filter(grepl("Hybrid|hybrid", Cell_type))
+if (nrow(hybrid_cells) > 0) {
+  cat("\n=== HYBRID CELLS DETECTED ===\n")
+  print(hybrid_cells)
+  cat(sprintf("Total hybrid cells: %d (%.1f%%)\n", 
+             sum(hybrid_cells$Cell_count), sum(hybrid_cells$Percentage)))
+}
+
+# Method effectiveness analysis
+method_effectiveness <- table(triple_results$Final_method)
+cat("\n=== RECONCILIATION METHOD EFFECTIVENESS ===\n")
+print(method_effectiveness)
+
+# Confidence distribution
+confidence_dist <- table(triple_results$Final_confidence)
+cat("\n=== FINAL ANNOTATION CONFIDENCE DISTRIBUTION ===\n")
+print(confidence_dist)
+
+# ==============================================================================
+# ANALYSIS AND VISUALIZATION
+# ==============================================================================
+
+cat("\n=== COMPREHENSIVE ANALYSIS ===\n")
+
+# Method-specific summaries
+create_method_summary <- function(annotations, method_name) {
+  counts <- table(annotations)
+  data.frame(
+    Cell_type = names(counts),
+    Cell_count = as.numeric(counts),
+    Percentage = round(as.numeric(counts) / length(annotations) * 100, 2),
+    Method = method_name,
+    stringsAsFactors = FALSE
+  ) %>% arrange(desc(Cell_count))
+}
+
+fm_summary <- create_method_summary(merged_seurat_hmm$FindMarkers_Sophisticated, "FindMarkers")
+ms_summary <- create_method_summary(merged_seurat_hmm$Manual_Signatures_Sophisticated, "Manual Signatures")
+hy_summary <- create_method_summary(merged_seurat_hmm$Hybrid_Sophisticated, "Hybrid Analysis")
+final_summary <- create_method_summary(merged_seurat_hmm$Final_Sophisticated_Annotation, "Final Reconciled")
+
+# Print summaries
+cat("\n=== FINDMARKERS SOPHISTICATED RESULTS ===\n")
+print(fm_summary)
+
+cat("\n=== MANUAL SIGNATURES SOPHISTICATED RESULTS ===\n")
+print(ms_summary)
+
+cat("\n=== HYBRID SOPHISTICATED RESULTS ===\n")
+print(hy_summary)
+
+cat("\n=== FINAL RECONCILED ANNOTATION RESULTS ===\n")
+print(final_summary)
+
+# Hybrid detection analysis
+hybrid_cells <- final_summary %>% filter(grepl("Hybrid|hybrid", Cell_type))
+if (nrow(hybrid_cells) > 0) {
+  cat("\n=== HYBRID CELLS DETECTED ===\n")
+  print(hybrid_cells)
+  cat(sprintf("Total hybrid cells: %d (%.1f%%)\n", 
+             sum(hybrid_cells$Cell_count), sum(hybrid_cells$Percentage)))
+}
+
+# Method effectiveness analysis
+method_effectiveness <- table(triple_results$Final_method)
+cat("\n=== RECONCILIATION METHOD EFFECTIVENESS ===\n")
+print(method_effectiveness)
+
+# Confidence distribution
+confidence_dist <- table(triple_results$Final_confidence)
+cat("\n=== FINAL ANNOTATION CONFIDENCE DISTRIBUTION ===\n")
+print(confidence_dist)
+```
+# 250730: Panel K
+```{r}
+# ==============================================================================
+# ENHANCED VISUALIZATION WITH CUSTOM STYLING
+# ==============================================================================
+
+if (CONFIG$save_plots && "umap" %in% names(merged_seurat_hmm@reductions)) {
+  cat("\n=== CREATING ENHANCED VISUALIZATIONS ===\n")
+  
+  # Define custom color palette
+  custom_colors <- c(
+    # Hybrid signatures (your specified colors)
+    "THC" = "red3",
+    "CHC1" = rgb(236/255, 164/255, 0/255),
+    "CHC2" = rgb(40/255, 0/255, 3/255),
+    #"CHC3" = rgb(121/255, 30/255, 148/255),
+    "CHC3" = rgb(30/255, 145/255, 214/255),
+    
+    # Cell types (your specified colors)
+    "Epithelial cells" = "gray45",
+    "Epithelial General" = "gray45",
+    "Colonocytes" = "gray45",
+    "Goblet cells" = "gray45",
+    "Monocytes" = "cadetblue3",
+    "CD14+ Monocytes" = "cadetblue3",
+    "CD16+ Monocytes" = "cadetblue3",
+    "NK cells" = "orange",
+    "CAFs" = "purple",
+    "CAF Inflammatory" = "purple",
+    "CAF Myofibroblastic" = "purple",
+    "CAF Matrix" = "purple",
+    "B cells" = "palegreen3",
+    
+    # Hybrid combinations (use color of first cell type)
+    "Hybrid THC" = "red3",
+    "Hybrid CHC1" = rgb(236/255, 164/255, 0/255),
+    "Hybrid CHC2" = rgb(40/255, 0/255, 3/255),
+    #"Hybrid CHC3" = rgb(121/255, 30/255, 148/255),
+    "Hybrid CHC3" = rgb(30/255, 145/255, 214/255),
+    "Potential hybrid THC" = "red3",
+    "Potential hybrid CHC1" = rgb(236/255, 164/255, 0/255),
+    "Potential hybrid CHC2" = rgb(40/255, 0/255, 3/255),
+    #"Potential hybrid CHC3" = rgb(121/255, 30/255, 148/255),
+    "Potential hybrid CHC3" = rgb(30/255, 145/255, 214/255),
+    
+    # Additional good colors for remaining cell types
+    "T cells" = "dodgerblue2",
+    "CD4+ T cells" = "dodgerblue2",
+    "CD8+ T cells" = "royalblue4",
+    "Memory T cells" = "lightblue3",
+    "Regulatory T cells" = "navy",
+    "Macrophages" = "cadetblue3",
+    "M1 Macrophages" = "cadetblue3",
+    "M2 Macrophages" = "cadetblue3",
+    "Dendritic cells" = "darkorange2",
+    "Plasmacytoid DCs" = "orange3",
+    "Plasma cells" = "springgreen4",
+    "Endothelial cells" = "hotpink3",
+    "Tumor cells" = "darkred",
+    "Cancer stem cells" = "maroon",
+    "Platelets" = "gold2",
+    "Uncharacterized" = "lightgray",
+    
+    # Additional colors for any remaining annotations
+    "Other1" = "mediumpurple",
+    "Other2" = "darkolivegreen",
+    "Other3" = "chocolate3",
+    "Other4" = "deepskyblue",
+    "Other5" = "indianred",
+    "Other6" = "forestgreen"
+  )
+  
+  # Function to clean annotation names (replace _ with spaces)
+  clean_annotation_names_for_display <- function(annotations) {
+    cleaned <- gsub("_", " ", annotations)
+    # Fix specific cases
+    cleaned <- gsub("cells cells", "cells", cleaned)
+    cleaned <- gsub("General cells", "cells", cleaned)
+    return(cleaned)
+  }
+  
+  # Function to get colors for annotations, with fallback
+  get_annotation_colors <- function(annotations) {
+    cleaned_annotations <- clean_annotation_names_for_display(annotations)
+    unique_annotations <- unique(cleaned_annotations)
+    
+    # Create color mapping
+    color_mapping <- character(length(unique_annotations))
+    names(color_mapping) <- unique_annotations
+    
+    for (annotation in unique_annotations) {
+      # Try exact match first
+      if (annotation %in% names(custom_colors)) {
+        color_mapping[annotation] <- custom_colors[annotation]
+      }
+      # Try partial matches for hybrid annotations
+      else if (grepl("Hybrid|hybrid", annotation)) {
+        if (grepl("THC", annotation)) {
+          color_mapping[annotation] <- custom_colors["THC"]
+        } else if (grepl("CHC1", annotation)) {
+          color_mapping[annotation] <- custom_colors["CHC1"]
+        } else if (grepl("CHC2", annotation)) {
+          color_mapping[annotation] <- custom_colors["CHC2"]
+        } else if (grepl("CHC3", annotation)) {
+          color_mapping[annotation] <- custom_colors["CHC3"]
+        } else {
+          color_mapping[annotation] <- "red"  # Default for other hybrids
+        }
+      }
+      # Try partial matches for cell types
+      else if (grepl("Epithelial|epithelial|Colonocyte|Goblet", annotation)) {
+        color_mapping[annotation] <- custom_colors["Epithelial cells"]
+      } else if (grepl("Monocyte", annotation)) {
+        color_mapping[annotation] <- custom_colors["Monocytes"]
+      } else if (grepl("NK", annotation)) {
+        color_mapping[annotation] <- custom_colors["NK cells"]
+      } else if (grepl("CAF|Fibroblast", annotation)) {
+        color_mapping[annotation] <- custom_colors["CAFs"]
+      } else if (grepl("B cell|B-cell", annotation)) {
+        color_mapping[annotation] <- custom_colors["B cells"]
+      }
+      # Use predefined colors or assign from remaining colors
+      else {
+        remaining_colors <- setdiff(custom_colors, color_mapping)
+        if (length(remaining_colors) > 0) {
+          color_mapping[annotation] <- remaining_colors[1]
+        } else {
+          # Generate a random color if we run out
+          color_mapping[annotation] <- rainbow(1, start = runif(1))
+        }
+      }
+    }
+    
+    return(color_mapping)
+  }
+  
+  # Create enhanced plotting function
+  create_enhanced_dimplot <- function(object, group_by, plot_title, custom_colors = NULL) {
+    # Clean annotation names for display
+    temp_annotations <- clean_annotation_names_for_display(object@meta.data[[group_by]])
+    object@meta.data[[paste0(group_by, "_clean")]] <- temp_annotations
+    
+    # Get appropriate colors
+    if (is.null(custom_colors)) {
+      plot_colors <- get_annotation_colors(temp_annotations)
+    } else {
+      plot_colors <- custom_colors
+    }
+    
+    # Create the plot with enhanced styling
+    p <- DimPlot(object, 
+                 group.by = paste0(group_by, "_clean"),
+                 reduction = "umap", 
+                 label = TRUE, 
+                 repel = TRUE, 
+                 label.size = 6,          # Your specified font size
+                 cols = plot_colors,
+                 pt.size = 0.5) +
+      ggtitle(plot_title) +
+      theme_void() +                     # Remove all axis elements
+      theme(
+        aspect.ratio = 1,                # Your specified aspect ratio
+        plot.title = element_text(size = 6, hjust = 0.5),  # Font size 6
+        legend.position = "right",
+        legend.text = element_text(size = 6),               # Font size 6
+        legend.title = element_text(size = 6),              # Font size 6
+        legend.key.size = unit(0.3, "cm"),
+        plot.margin = margin(5, 5, 5, 5, "pt")
+      ) +
+      guides(color = guide_legend(override.aes = list(size = 2), ncol = 1))
+    
+    # Clean up temporary column
+    object@meta.data[[paste0(group_by, "_clean")]] <- NULL
+    
+    return(p)
+  }
+  
+  # Alternative function with manual label positioning for better control
+  create_enhanced_dimplot_with_arrows <- function(object, group_by, plot_title, custom_colors = NULL) {
+    # Clean annotation names for display
+    temp_annotations <- clean_annotation_names_for_display(object@meta.data[[group_by]])
+    object@meta.data[[paste0(group_by, "_clean")]] <- temp_annotations
+    
+    # Get appropriate colors
+    if (is.null(custom_colors)) {
+      plot_colors <- get_annotation_colors(temp_annotations)
+    } else {
+      plot_colors <- custom_colors
+    }
+    
+    # Create base plot without labels first
+    p <- DimPlot(object, 
+                 group.by = paste0(group_by, "_clean"),
+                 reduction = "umap", 
+                 label = FALSE,           # Turn off default labels
+                 cols = plot_colors,
+                 pt.size = 0.5) +
+      ggtitle(plot_title) +
+      theme_void() +
+      theme(
+        aspect.ratio = 1,
+        plot.title = element_text(size = 6, hjust = 0.5),
+        legend.position = "right",
+        legend.text = element_text(size = 6),
+        legend.title = element_text(size = 6),
+        legend.key.size = unit(0.3, "cm"),
+        plot.margin = margin(5, 5, 5, 5, "pt")
+      ) +
+      guides(color = guide_legend(override.aes = list(size = 2), ncol = 1))
+    
+    # Get UMAP coordinates and calculate cluster centers for labels
+    umap_coords <- object@reductions$umap@cell.embeddings
+    clusters <- object@meta.data[[paste0(group_by, "_clean")]]
+    
+    # Calculate cluster centers
+    cluster_centers <- data.frame()
+    for (cluster in unique(clusters)) {
+      cluster_cells <- which(clusters == cluster)
+      if (length(cluster_cells) > 0) {
+        center_x <- median(umap_coords[cluster_cells, 1])
+        center_y <- median(umap_coords[cluster_cells, 2])
+        cluster_centers <- rbind(cluster_centers, data.frame(
+          cluster = cluster,
+          x = center_x,
+          y = center_y
+        ))
+      }
+    }
+    
+    # Add labels with ggrepel for better positioning
+    if (nrow(cluster_centers) > 0) {
+      p <- p + ggrepel::geom_text_repel(
+        data = cluster_centers,
+        aes(x = x, y = y, label = cluster),
+        inherit.aes = FALSE,
+        size = 6/ggplot2::.pt,
+        max.overlaps = Inf,           # Show all labels
+        min.segment.length = 0,
+        segment.size = 0.25,
+        segment.color = "black",
+        box.padding = 0.3,
+        point.padding = 0.3,
+        force = 2,
+        seed = 42
+      )
+    }
+    
+    # Clean up temporary column
+    object@meta.data[[paste0(group_by, "_clean")]] <- NULL
+    
+    return(p)
+  }
+  
+  # Method comparison plots with enhanced styling
+  # Try the simple approach first (uses Seurat's built-in label repelling)
+  p1 <- create_enhanced_dimplot(merged_seurat_hmm, "FindMarkers_Sophisticated", 
+                               "FindMarkers Sophisticated")
+  
+  p2 <- create_enhanced_dimplot(merged_seurat_hmm, "Manual_Signatures_Sophisticated",
+                               "Manual Signatures Sophisticated")
+  
+  p3 <- create_enhanced_dimplot(merged_seurat_hmm, "Hybrid_Sophisticated",
+                               "Hybrid Analysis Sophisticated")
+  
+  p4 <- create_enhanced_dimplot(merged_seurat_hmm, "Final_Sophisticated_Annotation",
+                               "Final Reconciled Annotation")
+  
+  # If you want better label control with arrows, uncomment these lines instead:
+  # p1 <- create_enhanced_dimplot_with_arrows(merged_seurat_hmm, "FindMarkers_Sophisticated", 
+  #                                          "FindMarkers Sophisticated")
+  # 
+  # p2 <- create_enhanced_dimplot_with_arrows(merged_seurat_hmm, "Manual_Signatures_Sophisticated",
+  #                                          "Manual Signatures Sophisticated")
+  # 
+  # p3 <- create_enhanced_dimplot_with_arrows(merged_seurat_hmm, "Hybrid_Sophisticated",
+  #                                          "Hybrid Analysis Sophisticated")
+  # 
+  # p4 <- create_enhanced_dimplot_with_arrows(merged_seurat_hmm, "Final_Sophisticated_Annotation",
+  #                                          "Final Reconciled Annotation")
+  
+  # Create comparison panel with enhanced layout
+  comparison_panel <- (p1 | p2) / (p3 | p4)
+  comparison_panel <- comparison_panel + plot_annotation(
+    title = "Sophisticated Triple Annotation System",
+    subtitle = "Independent analysis by three methods with final reconciliation",
+    theme = theme(
+      plot.title = element_text(size = 6, hjust = 0.5),
+      plot.subtitle = element_text(size = 6, hjust = 0.5)
+    )
+  )
+  
+  # Display the plot
+  print(comparison_panel)
+  
+  # Save plots with multiple format options
+  ggsave("sophisticated_triple_annotation_comparison.png", 
+         comparison_panel, width = 10, height = 8, dpi = 300)
+  
+  # Save individual plots
+  ggsave("findmarkers_sophisticated.png", p1, width = 6, height = 6, dpi = 300)
+  ggsave("manual_signatures_sophisticated.png", p2, width = 6, height = 6, dpi = 300)
+  ggsave("hybrid_sophisticated.png", p3, width = 6, height = 6, dpi = 300)
+  ggsave("final_sophisticated_annotation.png", p4, width = 6, height = 6, dpi = 300)
+  
+  # OPTIONAL: Save as PDF to specific directory (COMMENTED OUT)
+  # Uncomment the lines below to save to your specified directory
+  # 
+  # # Create directory if it doesn't exist
+  # if (!dir.exists("250725.Fig7Final")) {
+  #   dir.create("250725.Fig7Final", recursive = TRUE)
+  # }
+  # 
+  # # Save the comparison panel as PDF
+  # ggsave("250725.Fig7Final/250725.PanelK.SophAnnots.pdf", 
+  #        comparison_panel, width = 10, height = 8, dpi = 300, device = "pdf")
+  # 
+  # # Save individual plots as PDFs
+  # ggsave("250725.Fig7Final/250725.PanelK.FindMarkers.pdf", p1, 
+  #        width = 6, height = 6, dpi = 300, device = "pdf")
+  # ggsave("250725.Fig7Final/250725.PanelK.Manual.pdf", p2, 
+  #        width = 6, height = 6, dpi = 300, device = "pdf")
+  # ggsave("250725.Fig7Final/250725.PanelK.Hybrid.pdf", p3, 
+  #        width = 6, height = 6, dpi = 300, device = "pdf")
+  # ggsave("250725.Fig7Final/250725.PanelK.Final.pdf", p4, 
+  #        width = 6, height = 6, dpi = 300, device = "pdf")
+  
+  cat("✓ Enhanced visualizations created and saved\n")
+  cat("✓ Custom colors applied for hybrid signatures and cell types\n")
+  cat("✓ Annotations cleaned (underscores replaced with spaces)\n")
+  cat("✓ max.overlaps increased to show more labels\n")
+  cat("✓ Aspect ratio set to 1, font size set to 6\n")
+  cat("✓ Axes and tick marks removed\n")
+}
+
+
+# ==============================================================================
+# SAVE RESULTS
+# ==============================================================================
+
+if (CONFIG$save_intermediate) {
+  # Save comprehensive results
+  write.csv(triple_results, "sophisticated_triple_annotation_results.csv", row.names = FALSE)
+  
+  # Save method summaries
+  all_summaries <- rbind(fm_summary, ms_summary, hy_summary, final_summary)
+  write.csv(all_summaries, "sophisticated_annotation_summaries.csv", row.names = FALSE)
+  
+  # Save hybrid-specific results
+  if (nrow(hybrid_cells) > 0) {
+    write.csv(hybrid_cells, "sophisticated_hybrid_cells_detected.csv", row.names = FALSE)
+  }
+  
+  cat("✓ Data files saved\n")
+}
+
+# Save annotated Seurat object
+saveRDS(merged_seurat_hmm, "merged_seurat_sophisticated_triple_annotated.rds")
+
+# ==============================================================================
+# DIAGNOSTIC FUNCTIONS
+# ==============================================================================
+
+# Create diagnostic functions
+check_sophisticated_cluster_annotation <- function(cluster_id) {
+  cat(sprintf("\n=== DETAILED ANALYSIS FOR CLUSTER %s ===\n", cluster_id))
+  
+  cluster_data <- triple_results[triple_results$cluster == cluster_id, ]
+  
+  if (nrow(cluster_data) == 0) {
+    cat("Cluster not found!\n")
+    return()
+  }
+  
+  cat("FINDMARKERS ANALYSIS:\n")
+  cat(sprintf("• Annotation: %s\n", cluster_data$FM_annotation))
+  cat(sprintf("• Confidence: %d markers (Bio confidence: %.2f)\n", 
+             cluster_data$FM_n_markers, cluster_data$FM_bio_confidence))
+  cat(sprintf("• Evidence: %s\n", cluster_data$FM_evidence))
+  
+  cat("\nMANUAL SIGNATURES ANALYSIS:\n")
+  cat(sprintf("• Annotation: %s\n", cluster_data$MS_annotation))
+  cat(sprintf("• Confidence: %.2f (%s level)\n", 
+             cluster_data$MS_confidence, cluster_data$MS_confidence_level))
+  cat(sprintf("• High confidence signatures: %d\n", cluster_data$MS_n_high_conf))
+  cat(sprintf("• Evidence: %s\n", cluster_data$MS_evidence))
+  
+  cat("\nHYBRID ANALYSIS:\n")
+  cat(sprintf("• Annotation: %s\n", cluster_data$HY_annotation))
+  cat(sprintf("• Confidence: %.2f (%s level)\n", 
+             cluster_data$HY_confidence, cluster_data$HY_confidence_level))
+  cat(sprintf("• Strong hybrids: %d, Moderate: %d\n", 
+             cluster_data$HY_n_strong, cluster_data$HY_n_moderate))
+  cat(sprintf("• Evidence: %s\n", cluster_data$HY_evidence))
+  
+  cat("\nFINAL RECONCILIATION:\n")
+  cat(sprintf("• Final Annotation: %s\n", cluster_data$Final_annotation))
+  cat(sprintf("• Method Used: %s\n", cluster_data$Final_method))
+  cat(sprintf("• Confidence: %s\n", cluster_data$Final_confidence))
+  cat(sprintf("• Supporting Evidence: %s\n", cluster_data$Final_evidence))
+}
+
+compare_methods_for_cluster <- function(cluster_id) {
+  cat(sprintf("\n=== METHOD COMPARISON FOR CLUSTER %s ===\n", cluster_id))
+  
+  cluster_data <- triple_results[triple_results$cluster == cluster_id, ]
+  
+  if (nrow(cluster_data) == 0) {
+    cat("Cluster not found!\n")
+    return()
+  }
+  
+  methods_df <- data.frame(
+    Method = c("FindMarkers", "Manual Signatures", "Hybrid Analysis", "Final Reconciled"),
+    Annotation = c(cluster_data$FM_annotation, cluster_data$MS_annotation, 
+                  cluster_data$HY_annotation, cluster_data$Final_annotation),
+    Confidence_Level = c(cluster_data$FM_method, cluster_data$MS_confidence_level,
+                        cluster_data$HY_confidence_level, cluster_data$Final_confidence),
+    Evidence = c(cluster_data$FM_evidence, cluster_data$MS_evidence,
+                cluster_data$HY_evidence, cluster_data$Final_evidence)
+  )
+  
+  print(methods_df)
+  
+  # Cell count for this cluster
+  cluster_cell_count <- sum(merged_seurat_hmm$seurat_clusters == cluster_id)
+  cat(sprintf("Cluster contains %d cells\n", cluster_cell_count))
+}
+
+# ==============================================================================
+# FINAL SUMMARY AND RECOMMENDATIONS
+# ==============================================================================
+
+cat("\n", rep("=", 80), "\n")
+cat("SOPHISTICATED TRIPLE ANNOTATION SYSTEM - COMPLETE\n")
+cat(rep("=", 80), "\n")
+
+cat("\n🎉 SUCCESS! Created sophisticated triple annotation system:\n\n")
+
+cat("📊 METHOD COMPARISON:\n")
+cat("1. FindMarkers Sophisticated:\n")
+cat("   • Enhanced biological inference with confidence scoring\n")
+cat("   • Multi-factor confidence assessment\n")
+cat("   • Filtered ribosomal/mitochondrial genes\n")
+cat("   • Downsampled large clusters for better statistics\n\n")
+
+cat("2. Manual Signatures Sophisticated:\n")
+cat("   • Z-score normalized within signature category\n")
+cat("   • Threshold-based assignment (non-competitive)\n")
+cat("   • Multiple confidence levels (High/Medium/Low)\n")
+cat("   • Comprehensive curated signature library\n\n")
+
+cat("3. Hybrid Analysis Sophisticated:\n")
+cat("   • Combo scores (Up - Down) for biological relevance\n")
+cat("   • Z-score normalized for fair comparison\n")
+cat("   • Independent threshold assignment\n")
+cat("   • Multi-level confidence (Strong/Moderate/Weak)\n\n")
+
+# Calculate method statistics
+total_cells <- ncol(merged_seurat_hmm)
+
+# Uncharacterized rates by method
+fm_unchar <- sum(grepl("Uncharacterized|^Cluster", merged_seurat_hmm$FindMarkers_Sophisticated))
+ms_unchar <- sum(grepl("Uncharacterized", merged_seurat_hmm$Manual_Signatures_Sophisticated))
+final_unchar <- sum(grepl("Uncharacterized", merged_seurat_hmm$Final_Sophisticated_Annotation))
+
+cat("📈 ANNOTATION SUCCESS RATES:\n")
+cat(sprintf("• FindMarkers: %d/%d cells characterized (%.1f%%)\n",
+           total_cells - fm_unchar, total_cells, (total_cells - fm_unchar) / total_cells * 100))
+cat(sprintf("• Manual Signatures: %d/%d cells characterized (%.1f%%)\n",
+           total_cells - ms_unchar, total_cells, (total_cells - ms_unchar) / total_cells * 100))
+cat(sprintf("• Final Reconciled: %d/%d cells characterized (%.1f%%)\n",
+           total_cells - final_unchar, total_cells, (total_cells - final_unchar) / total_cells * 100))
+
+# Hybrid detection summary
+hybrid_positive_cells <- sum(grepl("Hybrid|hybrid", merged_seurat_hmm$Final_Sophisticated_Annotation))
+if (hybrid_positive_cells > 0) {
+  cat(sprintf("• Hybrid cells detected: %d (%.1f%%)\n", 
+             hybrid_positive_cells, hybrid_positive_cells / total_cells * 100))
+  
+  # Break down by hybrid type
+  for (combo_type in combo_types) {
+    type_count <- sum(grepl(combo_type, merged_seurat_hmm$Final_Sophisticated_Annotation))
+    if (type_count > 0) {
+      cat(sprintf("  - %s: %d cells\n", combo_type, type_count))
+    }
+  }
+}
+
+# Method effectiveness analysis
+cat("\n🔧 RECONCILIATION METHOD EFFECTIVENESS:\n")
+top_methods <- head(sort(method_effectiveness, decreasing = TRUE), 3)
+for (i in 1:length(top_methods)) {
+  method_name <- names(top_methods)[i]
+  count <- top_methods[i]
+  cat(sprintf("%d. %s: %d clusters\n", i, method_name, count))
+}
+
+# Confidence distribution
+high_conf <- sum(triple_results$Final_confidence == "High")
+medium_conf <- sum(triple_results$Final_confidence == "Medium")
+low_conf <- sum(triple_results$Final_confidence == "Low")
+
+cat(sprintf("\n🎯 FINAL ANNOTATION CONFIDENCE:\n"))
+cat(sprintf("• High confidence: %d clusters (%.1f%%)\n", high_conf, high_conf / n_clusters * 100))
+cat(sprintf("• Medium confidence: %d clusters (%.1f%%)\n", medium_conf, medium_conf / n_clusters * 100))
+cat(sprintf("• Low confidence: %d clusters (%.1f%%)\n", low_conf, low_conf / n_clusters * 100))
+
+cat("\n📁 FILES GENERATED:\n")
+
+if (CONFIG$save_plots) {
+  cat("VISUALIZATIONS:\n")
+  cat("• sophisticated_triple_annotation_comparison.png - Complete method comparison\n")
+  cat("• findmarkers_sophisticated.png - FindMarkers results\n")
+  cat("• manual_signatures_sophisticated.png - Manual signature results\n")
+  cat("• hybrid_sophisticated.png - Hybrid analysis results\n")
+  cat("• final_sophisticated_annotation.png - Final reconciled annotations\n\n")
+}
+
+if (CONFIG$save_intermediate) {
+  cat("DATA FILES:\n")
+  cat("• sophisticated_triple_annotation_results.csv - Complete analysis results\n")
+  cat("• sophisticated_annotation_summaries.csv - Method-specific summaries\n")
+  cat("• sophisticated_findmarkers_results.csv - Enhanced FindMarkers analysis\n")
+  if (nrow(hybrid_cells) > 0) {
+    cat("• sophisticated_hybrid_cells_detected.csv - Hybrid cell details\n")
+  }
+  cat("\n")
+}
+
+cat("SEURAT OBJECT:\n")
+cat("• merged_seurat_sophisticated_triple_annotated.rds - Complete annotated object\n\n")
+
+cat("🔬 NEW METADATA COLUMNS:\n")
+cat("• FindMarkers_Sophisticated - Enhanced FindMarkers annotations\n")
+cat("• Manual_Signatures_Sophisticated - Z-score normalized manual signatures\n")
+cat("• Hybrid_Sophisticated - Combo score based hybrid detection\n")
+cat("• Final_Sophisticated_Annotation - Reconciled final annotations\n")
+cat("• Final_Annotation_Method - Method used for final annotation\n")
+cat("• Final_Annotation_Confidence - Confidence level of final annotation\n")
+
+cat("\n💡 USAGE RECOMMENDATIONS:\n")
+cat("• Use 'Final_Sophisticated_Annotation' for publication-ready analysis\n")
+cat("• Compare individual methods to understand annotation basis\n")
+cat("• Focus on High and Medium confidence annotations for downstream analysis\n")
+cat("• Validate hybrid cells with additional functional assays\n")
+cat("• Use method-specific results for targeted analysis:\n")
+cat("  - FindMarkers for data-driven discovery\n")
+cat("  - Manual Signatures for literature-based validation\n")
+cat("  - Hybrid Analysis for cellular plasticity studies\n")
+
+cat("\n💬 DIAGNOSTIC FUNCTIONS AVAILABLE:\n")
+cat("• check_sophisticated_cluster_annotation(cluster_id) - Detailed cluster analysis\n")
+cat("• compare_methods_for_cluster(cluster_id) - Method comparison for specific cluster\n")
+
+cat("\nAnalysis complete! Use the diagnostic functions to explore specific clusters.\n")
+cat("Example: check_sophisticated_cluster_annotation('0')\n")
+
+# Final quality check
+if (any(is.na(merged_seurat_hmm$Final_Sophisticated_Annotation))) {
+  cat("\n⚠️  WARNING: Some cells have NA annotations. Check the analysis.\n")
+} else {
+  cat("\n✅ Quality check passed: All cells have annotations.\n")
+}
+
+cat("\n🎊 SOPHISTICATED TRIPLE ANNOTATION SYSTEM SUCCESSFULLY COMPLETED! 🎊\n")
+
+```
+# Panel M
+```{r}
+# ==============================================================================
+# ANALYSIS AND VISUALIZATION
+# ==============================================================================
+
+cat("\n=== COMPREHENSIVE ANALYSIS ===\n")
+
+# Method-specific summaries
+create_method_summary <- function(annotations, method_name) {
+  counts <- table(annotations)
+  data.frame(
+    Cell_type = names(counts),
+    Cell_count = as.numeric(counts),
+    Percentage = round(as.numeric(counts) / length(annotations) * 100, 2),
+    Method = method_name,
+    stringsAsFactors = FALSE
+  ) %>% arrange(desc(Cell_count))
+}
+
+fm_summary <- create_method_summary(merged_seurat_hmm$FindMarkers_Sophisticated, "FindMarkers")
+ms_summary <- create_method_summary(merged_seurat_hmm$Manual_Signatures_Sophisticated, "Manual Signatures")
+hy_summary <- create_method_summary(merged_seurat_hmm$Hybrid_Sophisticated, "Hybrid Analysis")
+final_summary <- create_method_summary(merged_seurat_hmm$Final_Sophisticated_Annotation, "Final Reconciled")
+
+# Print summaries
+cat("\n=== FINDMARKERS SOPHISTICATED RESULTS ===\n")
+print(fm_summary)
+
+cat("\n=== MANUAL SIGNATURES SOPHISTICATED RESULTS ===\n")
+print(ms_summary)
+
+cat("\n=== HYBRID SOPHISTICATED RESULTS ===\n")
+print(hy_summary)
+
+cat("\n=== FINAL RECONCILED ANNOTATION RESULTS ===\n")
+print(final_summary)
+
+# Hybrid detection analysis
+hybrid_cells <- final_summary %>% filter(grepl("Hybrid|hybrid", Cell_type))
+if (nrow(hybrid_cells) > 0) {
+  cat("\n=== HYBRID CELLS DETECTED ===\n")
+  print(hybrid_cells)
+  cat(sprintf("Total hybrid cells: %d (%.1f%%)\n", 
+             sum(hybrid_cells$Cell_count), sum(hybrid_cells$Percentage)))
+}
+
+# Method effectiveness analysis
+method_effectiveness <- table(triple_results$Final_method)
+cat("\n=== RECONCILIATION METHOD EFFECTIVENESS ===\n")
+print(method_effectiveness)
+
+# Confidence distribution
+confidence_dist <- table(triple_results$Final_confidence)
+cat("\n=== FINAL ANNOTATION CONFIDENCE DISTRIBUTION ===\n")
+print(confidence_dist)
+
+# ==============================================================================
+# ENHANCED VISUALIZATION WITH IMPROVED COLOR SCHEME
+# ==============================================================================
+
+if (CONFIG$save_plots && "umap" %in% names(merged_seurat_hmm@reductions)) {
+  cat("\n=== CREATING ENHANCED VISUALIZATIONS ===\n")
+  
+  # Define structured color palette - specific cell types get priority colors
+  primary_cell_colors <- c(
+    # Hybrid signatures (your specified colors) - highest priority
+    "THC" = "red3",
+    "CHC1" = rgb(236/255, 164/255, 0/255),
+    "CHC2" = rgb(40/255, 0/255, 3/255),
+    #"CHC3" = rgb(121/255, 30/255, 148/255),
+    "CHC3" = rgb(30/255, 145/255, 214/255),
+    
+    # Major cell types (your specified colors)
+    "Epithelial cells" = "gray45",
+    "Epithelial General" = "gray45",
+    "Colonocytes" = "gray45",
+    "Goblet cells" = "gray45",
+    "Monocytes" = "cadetblue3",
+    "CD14+ Monocytes" = "cadetblue3",
+    "CD16+ Monocytes" = "cadetblue3",
+    "NK cells" = "coral",
+    "CAFs" = "purple",
+    "CAF Inflammatory" = "purple",
+    "CAF Myofibroblastic" = "purple",
+    "CAF Matrix" = "purple",
+    "B cells" = "palegreen3",
+    
+    # Other important cell types
+    "T cells" = "dodgerblue2",
+    "CD4+ T cells" = "dodgerblue2",
+    "CD8+ T cells" = "royalblue4",
+    "Memory T cells" = "lightblue3",
+    "Regulatory T cells" = "navy",
+    "Macrophages" = "darkturquoise",
+    "M1 Macrophages" = "darkturquoise",
+    "M2 Macrophages" = "lightseagreen",
+    "Dendritic cells" = "darkorange2",
+    "Plasmacytoid DCs" = "orange3",
+    "Plasma cells" = "springgreen4",
+    "Endothelial cells" = "hotpink3",
+    "Tumor cells" = "darkred",
+    "Cancer stem cells" = "maroon",
+    "Platelets" = "gold2"
+  )
+  
+  # Colors specifically reserved for uncharacterized/unknown clusters
+  uncharacterized_colors <- c(
+    "lightgray", "gray80", "gray70", "grey30", "gainsboro",
+    "grey40", "darkgray", "dimgray", "gray60", "gray50"
+  )
+  
+  # Additional colors for any remaining cell types (avoid primary colors)
+  additional_colors <- c(
+    "mediumseagreen", "#7FEFBD", "darkolivegreen", "chocolate3",
+    "indianred", "forestgreen", "darkslateblue", "sienna", 
+    "darkgoldenrod", "darkcyan", "darkmagenta"
+  )
+  
+  # Function to clean annotation names and remove multi-cell designations
+  clean_annotation_names_for_display <- function(annotations) {
+    cleaned <- gsub("_", " ", annotations)
+    
+    # Remove multi-cell patterns - convert to single dominant cell type
+    # Remove "Hybrid" prefix and take only the first cell type mentioned
+    cleaned <- gsub("Hybrid ", "", cleaned)
+    cleaned <- gsub("Potential hybrid ", "", cleaned)
+    cleaned <- gsub("Potential ", "", cleaned)
+    
+    # For multi-cell annotations, take the first cell type mentioned
+    # Pattern: "CellType1/CellType2" or "CellType1-CellType2" -> "CellType1"
+    cleaned <- gsub("([^/\\-]+)[/\\-].*", "\\1", cleaned)
+    
+    # Clean up common issues
+    cleaned <- gsub("cells cells", "cells", cleaned)
+    cleaned <- gsub("General cells", "cells", cleaned)
+    
+    return(cleaned)
+  }
+  
+  # Function to get colors with proper hierarchy
+  get_annotation_colors <- function(annotations) {
+    cleaned_annotations <- clean_annotation_names_for_display(annotations)
+    unique_annotations <- unique(cleaned_annotations)
+    
+    # Create color mapping
+    color_mapping <- character(length(unique_annotations))
+    names(color_mapping) <- unique_annotations
+    
+    # Track used colors to avoid duplicates
+    used_colors <- character(0)
+    
+    for (annotation in unique_annotations) {
+      color_assigned <- FALSE
+      
+      # First priority: exact matches in primary colors
+      if (annotation %in% names(primary_cell_colors)) {
+        color_mapping[annotation] <- primary_cell_colors[annotation]
+        used_colors <- c(used_colors, primary_cell_colors[annotation])
+        color_assigned <- TRUE
+      }
+      
+      # Second priority: partial matches for known cell types
+      if (!color_assigned) {
+        if (grepl("Epithelial|epithelial|Colonocyte|Goblet", annotation)) {
+          color_mapping[annotation] <- primary_cell_colors["Epithelial cells"]
+          used_colors <- c(used_colors, primary_cell_colors["Epithelial cells"])
+          color_assigned <- TRUE
+        } else if (grepl("Monocyte", annotation)) {
+          color_mapping[annotation] <- primary_cell_colors["Monocytes"]
+          used_colors <- c(used_colors, primary_cell_colors["Monocytes"])
+          color_assigned <- TRUE
+        } else if (grepl("NK", annotation)) {
+          color_mapping[annotation] <- primary_cell_colors["NK cells"]
+          used_colors <- c(used_colors, primary_cell_colors["NK cells"])
+          color_assigned <- TRUE
+        } else if (grepl("CAF|Fibroblast", annotation)) {
+          color_mapping[annotation] <- primary_cell_colors["CAFs"]
+          used_colors <- c(used_colors, primary_cell_colors["CAFs"])
+          color_assigned <- TRUE
+        } else if (grepl("B cell|B-cell", annotation)) {
+          color_mapping[annotation] <- primary_cell_colors["B cells"]
+          used_colors <- c(used_colors, primary_cell_colors["B cells"])
+          color_assigned <- TRUE
+        } else if (grepl("T cell|T-cell", annotation)) {
+          color_mapping[annotation] <- primary_cell_colors["T cells"]
+          used_colors <- c(used_colors, primary_cell_colors["T cells"])
+          color_assigned <- TRUE
+        } else if (grepl("Macrophage", annotation)) {
+          color_mapping[annotation] <- primary_cell_colors["Macrophages"]
+          used_colors <- c(used_colors, primary_cell_colors["Macrophages"])
+          color_assigned <- TRUE
+        }
+      }
+      
+      # Third priority: uncharacterized/unknown clusters get reserved colors
+      if (!color_assigned && grepl("Uncharacterized|Unknown|Undefined|Cluster|unassigned", annotation, ignore.case = TRUE)) {
+        available_unchar_colors <- setdiff(uncharacterized_colors, used_colors)
+        if (length(available_unchar_colors) > 0) {
+          color_mapping[annotation] <- available_unchar_colors[1]
+          used_colors <- c(used_colors, available_unchar_colors[1])
+          color_assigned <- TRUE
+        }
+      }
+      
+      # Fourth priority: remaining annotations get additional colors
+      if (!color_assigned) {
+        available_additional_colors <- setdiff(additional_colors, used_colors)
+        if (length(available_additional_colors) > 0) {
+          color_mapping[annotation] <- available_additional_colors[1]
+          used_colors <- c(used_colors, available_additional_colors[1])
+          color_assigned <- TRUE
+        } else {
+          # Fallback: generate a neutral color
+          color_mapping[annotation] <- paste0("gray", sample(30:90, 1))
+        }
+      }
+    }
+    
+    return(color_mapping)
+  }
+  
+  # Create enhanced plotting function
+  create_enhanced_dimplot <- function(object, group_by, plot_title, custom_colors = NULL) {
+    # Clean annotation names for display
+    temp_annotations <- clean_annotation_names_for_display(object@meta.data[[group_by]])
+    object@meta.data[[paste0(group_by, "_clean")]] <- temp_annotations
+    
+    # Get appropriate colors
+    if (is.null(custom_colors)) {
+      plot_colors <- get_annotation_colors(temp_annotations)
+    } else {
+      plot_colors <- custom_colors
+    }
+    
+    # Create the plot with enhanced styling
+    p <- DimPlot(object, 
+                 group.by = paste0(group_by, "_clean"),
+                 reduction = "umap", 
+                 label = TRUE, 
+                 repel = TRUE, 
+                 label.size = 6,          # Your specified font size
+                 cols = plot_colors,
+                 pt.size = 0.5) +
+      ggtitle(plot_title) +
+      theme_void() +                     # Remove all axis elements
+      theme(
+        aspect.ratio = 1,                # Your specified aspect ratio
+        plot.title = element_text(size = 6, hjust = 0.5),  # Font size 6
+        legend.position = "right",
+        legend.text = element_text(size = 6),               # Font size 6
+        legend.title = element_text(size = 6),              # Font size 6
+        legend.key.size = unit(0.3, "cm"),
+        plot.margin = margin(5, 5, 5, 5, "pt")
+      ) +
+      guides(color = guide_legend(override.aes = list(size = 2), ncol = 1))
+    
+    # Clean up temporary column
+    object@meta.data[[paste0(group_by, "_clean")]] <- NULL
+    
+    return(p)
+  }
+  
+  # Create clean plotting function without labels
+  create_clean_dimplot <- function(object, group_by, plot_title, custom_colors = NULL) {
+    # Clean annotation names for display and remove multi-cell designations
+    temp_annotations <- clean_annotation_names_for_display(object@meta.data[[group_by]])
+    object@meta.data[[paste0(group_by, "_clean")]] <- temp_annotations
+    
+    # Get appropriate colors
+    if (is.null(custom_colors)) {
+      plot_colors <- get_annotation_colors(temp_annotations)
+    } else {
+      plot_colors <- custom_colors
+    }
+    
+    # Create clean plot without any labels
+    p <- DimPlot(object, 
+                 group.by = paste0(group_by, "_clean"),
+                 reduction = "umap", 
+                 label = FALSE,           # No labels on plot
+                 cols = plot_colors,
+                 pt.size = 0.8) +        # Slightly larger points since no labels
+      ggtitle(plot_title) +
+      theme_void() +                     # Remove all axis elements
+      theme(
+        aspect.ratio = 1,                # Your specified aspect ratio
+        plot.title = element_text(size = 8, hjust = 0.5, face = "bold"),  # Slightly larger title
+        legend.position = "right",
+        legend.text = element_text(size = 7),               # Slightly larger legend text
+        legend.title = element_blank(),                     # Remove legend title for cleaner look
+        legend.key.size = unit(0.4, "cm"),                # Slightly larger legend keys
+        plot.margin = margin(10, 10, 10, 10, "pt")
+      ) +
+      guides(color = guide_legend(override.aes = list(size = 3), ncol = 1))  # Larger legend points
+    
+    # Clean up temporary column
+    object@meta.data[[paste0(group_by, "_clean")]] <- NULL
+    
+    return(p)
+  }
+  
+  # Method comparison plots with enhanced styling
+  # Standard version with labels
+  p1 <- create_enhanced_dimplot(merged_seurat_hmm, "FindMarkers_Sophisticated", 
+                               "FindMarkers Sophisticated")
+  
+  p2 <- create_enhanced_dimplot(merged_seurat_hmm, "Manual_Signatures_Sophisticated",
+                               "Manual Modules Sophisticated")
+  
+  p3 <- create_enhanced_dimplot(merged_seurat_hmm, "Hybrid_Sophisticated",
+                               "Hybrid Analysis Sophisticated")
+  
+  p4 <- create_enhanced_dimplot(merged_seurat_hmm, "Final_Sophisticated_Annotation",
+                               "Final Reconciled Annotation")
+  
+  # Clean version without labels
+  p1_clean <- create_clean_dimplot(merged_seurat_hmm, "FindMarkers_Sophisticated", 
+                                  "FindMarkers Sophisticated")
+  
+  p2_clean <- create_clean_dimplot(merged_seurat_hmm, "Manual_Signatures_Sophisticated",
+                                  "Manual Modules Sophisticated")
+  
+  p3_clean <- create_clean_dimplot(merged_seurat_hmm, "Hybrid_Sophisticated",
+                                  "Hybrid Analysis Sophisticated")
+  
+  p4_clean <- create_clean_dimplot(merged_seurat_hmm, "Final_Sophisticated_Annotation",
+                                  "Final Reconciled Annotation")
+  
+  # Create comparison panels
+  # Standard version with labels
+  comparison_panel <- (p1 | p2) / (p3 | p4)
+  comparison_panel <- comparison_panel + plot_annotation(
+    title = "Sophisticated Triple Annotation System - Single Cell Types",
+    subtitle = "Multi-cell designations resolved to dominant cell type",
+    theme = theme(
+      plot.title = element_text(size = 8, hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(size = 7, hjust = 0.5)
+    )
+  )
+  
+  # Clean version without labels
+  comparison_panel_clean <- (p1_clean | p2_clean) / (p3_clean | p4_clean)
+  comparison_panel_clean <- comparison_panel_clean + plot_annotation(
+    title = "Sophisticated Triple Annotation System - Clean Single Cell Types",
+    subtitle = "Legend-based identification, single cell type per cluster",
+    theme = theme(
+      plot.title = element_text(size = 8, hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(size = 7, hjust = 0.5)
+    )
+  )
+  
+  # Display the plots
+  print(comparison_panel)
+  print(comparison_panel_clean)
+  
+  # Save both versions
+  # Standard version with labels
+  ggsave("sophisticated_triple_annotation_comparison_SINGLE.png", 
+         comparison_panel, width = 12, height = 10, dpi = 300)
+  
+  # Clean version without labels
+  ggsave("sophisticated_triple_annotation_comparison_SINGLE_CLEAN.png", 
+         comparison_panel_clean, width = 12, height = 10, dpi = 300)
+  
+  # Save individual plots - both versions
+  # Standard with labels
+  ggsave("findmarkers_sophisticated_SINGLE.png", p1, width = 6, height = 6, dpi = 300)
+  ggsave("manual_signatures_sophisticated_SINGLE.png", p2, width = 6, height = 6, dpi = 300)
+  ggsave("hybrid_sophisticated_SINGLE.png", p3, width = 6, height = 6, dpi = 300)
+  ggsave("final_sophisticated_annotation_SINGLE.png", p4, width = 6, height = 6, dpi = 300)
+  
+  # Clean without labels
+  ggsave("findmarkers_sophisticated_SINGLE_CLEAN.png", p1_clean, width = 6, height = 6, dpi = 300)
+  ggsave("manual_signatures_sophisticated_SINGLE_CLEAN.png", p2_clean, width = 6, height = 6, dpi = 300)
+  ggsave("hybrid_sophisticated_SINGLE_CLEAN.png", p3_clean, width = 6, height = 6, dpi = 300)
+  ggsave("final_sophisticated_annotation_SINGLE_CLEAN.png", p4_clean, width = 6, height = 6, dpi = 300)
+  
+# OPTIONAL: Save as PDF to specific directory (COMMENTED OUT)
+# Uncomment the lines below to save to your specified directory
+  # 
+  # # Create directory if it doesn't exist
+  # if (!dir.exists("250725.Fig7Final")) {
+  #   dir.create("250725.Fig7Final", recursive = TRUE)
+  # }
+  # 
+  # # Save the clean comparison panel as PDF (recommended version)
+ ggsave("250725.Fig7Final/250725.PanelM.SophAnnots.Single.pdf", 
+        comparison_panel_clean, width = 12, height = 10, dpi = 300, device = "pdf")
+ 
+ # Save individual clean plots as PDFs
+ ggsave("250725.Fig7Final/250725.PanelM.FindMarkers.Single.Clean.pdf", p1_clean, 
+        width = 6, height = 6, dpi = 300, device = "pdf")
+ ggsave("250725.Fig7Final/250725.PanelM.Manual.Single.Clean.pdf", p2_clean, 
+        width = 6, height = 6, dpi = 300, device = "pdf")
+ ggsave("250725.Fig7Final/250725.PanelM.Hybrid.Single.Clean.pdf", p3_clean, 
+        width = 6, height = 6, dpi = 300, device = "pdf")
+ ggsave("250725.Fig7Final/250725.PanelM.Final.Single.Clean.pdf", p4_clean, 
+        width = 6, height = 6, dpi = 300, device = "pdf")
+  
+  cat("✓ Enhanced visualizations created with single cell type designations\n")
+  cat("✓ Multi-cell annotations converted to dominant cell type\n")
+  cat("✓ Color hierarchy implemented: primary cell types > uncharacterized > additional\n")
+  cat("✓ Uncharacterized clusters use reserved gray colors only\n")
+  cat("✓ Hybrid/Potential prefixes removed for cleaner display\n")
+  cat("✓ Custom colors applied for known cell types\n")
+  cat("✓ Both labeled and clean versions available\n")
+  cat("✓ Files saved with '_SINGLE' and '_SINGLE_CLEAN' suffixes\n")
+}
+
+```
+# Panel N, O, P
+```{r}
+# PANELS N, O, P: HYBRID UMAP AND ANEUPLOIDY VIOLIN PLOTS
+# ========================================
+
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+
+cat("=== CREATING PANELS N, O, P ===\n")
+
+# Define hybrid cell colors
+hybrid_colors <- c(
+  "CHC1" = rgb(236/255, 164/255, 0/255),
+  "CHC2" = rgb(40/255, 0/255, 3/255), 
+  #"CHC3" = rgb(121/255, 30/255, 148/255),
+  "CHC3" = rgb(30/255, 145/255, 214/255),
+  "THC" = "red3"
+)
+
+# ========================================
+# PANEL N: UMAP FOR HYBRID CELLS ONLY
+# ========================================
+
+create_panel_n_hybrid_umap <- function() {
+  cat("Creating Panel N: Hybrid Cells UMAP\n")
+  
+  # Check if UMAP is available
+  if(!"umap" %in% names(merged_seurat_hmm@reductions)) {
+    cat("UMAP not found. Running UMAP...\n")
+    merged_seurat_hmm <- RunUMAP(merged_seurat_hmm, dims = 1:30, verbose = FALSE)
+  }
+  
+  # Find the column that contains hybrid information
+  hybrid_columns <- grep("hybrid|Hybrid|CHC|THC", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+  cat("Available hybrid columns:", paste(hybrid_columns, collapse = ", "), "\n")
+  
+  # Use the first available hybrid column or create one
+  if(length(hybrid_columns) > 0) {
+    hybrid_col <- hybrid_columns[1]
+    cat("Using column:", hybrid_col, "\n")
+  } else {
+    cat("No hybrid column found. Please specify the correct column name.\n")
+    return(NULL)
+  }
+  
+  # Get unique hybrid types
+  unique_hybrids <- unique(merged_seurat_hmm@meta.data[[hybrid_col]])
+  unique_hybrids <- unique_hybrids[!is.na(unique_hybrids)]
+  
+  # Filter for actual hybrid cells (CHC1, CHC2, CHC3, THC)
+  hybrid_cells <- unique_hybrids[unique_hybrids %in% names(hybrid_colors)]
+  cat("Hybrid cell types found:", paste(hybrid_cells, collapse = ", "), "\n")
+  
+  if(length(hybrid_cells) == 0) {
+    cat("No hybrid cells found in the specified column.\n")
+    return(NULL)
+  }
+  
+  # Create subset with only hybrid cells
+  hybrid_subset <- subset(merged_seurat_hmm, cells = which(merged_seurat_hmm@meta.data[[hybrid_col]] %in% hybrid_cells))
+  
+  # Create color mapping for hybrid cells only
+  plot_colors <- hybrid_colors[hybrid_cells]
+  
+  # Create the UMAP plot
+  p_panel_n <- DimPlot(
+    hybrid_subset,
+    group.by = hybrid_col,
+    cols = plot_colors,
+    pt.size = 0.8,
+    label = FALSE
+  ) +
+    theme_void() +  # Remove all axes and labels
+    theme(
+      plot.title = element_blank(),
+      legend.position = "right",
+      legend.title = element_text(size = 6, face = "bold"),
+      legend.text = element_text(size = 6),
+      legend.key.size = unit(0.3, "cm")
+    ) +
+    guides(color = guide_legend(title = "Hybrid Type", override.aes = list(size = 2)))
+  
+  return(p_panel_n)
+}
+
+# ========================================
+# PANEL O: VIOLIN PLOT - ANEUPLOIDY BY FINAL_SOPHISTICATED_ANNOTATION
+# ========================================
+
+create_panel_o_violin <- function() {
+  cat("Creating Panel O: Aneuploidy by Final_Sophisticated_Annotation\n")
+  
+  # Check if required columns exist
+  if(!"Final_Sophisticated_Annotation" %in% colnames(merged_seurat_hmm@meta.data)) {
+    cat("Final_Sophisticated_Annotation column not found.\n")
+    available_cols <- grep("Final|Annotation|Sophisticated", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+    cat("Available similar columns:", paste(available_cols, collapse = ", "), "\n")
+    return(NULL)
+  }
+  
+  # Use copykat_pred column for aneuploidy information
+  aneuploidy_col <- "copykat_pred"
+  if(!aneuploidy_col %in% colnames(merged_seurat_hmm@meta.data)) {
+    cat("copykat_pred column not found.\n")
+    return(NULL)
+  }
+  cat("Using aneuploidy column:", aneuploidy_col, "\n")
+  
+  # Create stacked bar plot for categorical aneuploidy data
+  # First filter for specific cell types and rename them
+  plot_data <- merged_seurat_hmm@meta.data %>%
+    filter(!is.na(.data[[aneuploidy_col]]) & !is.na(Final_Sophisticated_Annotation)) %>%
+    filter(Final_Sophisticated_Annotation %in% c("CAF_Matrix", "Endothelial Cells", "Epithelial_General", 
+                                                 "Hybrid CHC1", "Hybrid CHC2", "Hybrid CHC3", "Hybrid THC")) %>%
+    mutate(
+      # Rename specific cell types
+      Final_Sophisticated_Annotation_Clean = case_when(
+        Final_Sophisticated_Annotation == "CAF_Matrix" ~ "CAFs",
+        Final_Sophisticated_Annotation == "Epithelial_General" ~ "Epithelial cells",
+        TRUE ~ Final_Sophisticated_Annotation
+      )
+    ) %>%
+    group_by(Final_Sophisticated_Annotation_Clean, .data[[aneuploidy_col]]) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    group_by(Final_Sophisticated_Annotation_Clean) %>%
+    mutate(
+      total = sum(count),
+      percentage = count / total * 100
+    )
+  
+  p_panel_o <- ggplot(plot_data, aes(x = Final_Sophisticated_Annotation_Clean, y = percentage, fill = .data[[aneuploidy_col]])) +
+    geom_bar(stat = "identity", position = "stack") +
+    scale_fill_manual(values = c("diploid" = "lightblue", "aneuploid" = "darkred")) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      axis.text.y = element_text(size = 8),
+      axis.title = element_text(size = 10),
+      plot.title = element_text(size = 12, face = "bold"),
+      legend.position = "bottom",
+      legend.title = element_text(size = 8),
+      legend.text = element_text(size = 8)
+    ) +
+    labs(
+      title = "Panel O: Aneuploidy by Final Sophisticated Annotation",
+      x = "Cell Type",
+      y = "Percentage (%)",
+      fill = "Aneuploidy Status"
+    )
+  
+  return(p_panel_o)
+}
+
+# ========================================
+# PANEL P: VIOLIN PLOT - ANEUPLOIDY BY HYBRID DETAIL
+# ========================================
+
+create_panel_p_violin <- function() {
+  cat("Creating Panel P: Aneuploidy by Hybrid Detail\n")
+  
+  # Find hybrid detail column
+  hybrid_detail_cols <- grep("Hybrid.*Detail|hybrid.*detail|Detail.*Hybrid|detail.*hybrid", 
+                            colnames(merged_seurat_hmm@meta.data), value = TRUE)
+  
+  if(length(hybrid_detail_cols) == 0) {
+    # Try broader search for hybrid columns
+    hybrid_detail_cols <- grep("hybrid|Hybrid|CHC|THC", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+    cat("No specific 'Hybrid Detail' column found. Available hybrid columns:", paste(hybrid_detail_cols, collapse = ", "), "\n")
+  }
+  
+  if(length(hybrid_detail_cols) == 0) {
+    cat("No hybrid detail column found.\n")
+    return(NULL)
+  }
+  
+  hybrid_detail_col <- hybrid_detail_cols[1]
+  cat("Using hybrid detail column:", hybrid_detail_col, "\n")
+  
+  # Use copykat_pred column for aneuploidy information
+  aneuploidy_col <- "copykat_pred"
+  if(!aneuploidy_col %in% colnames(merged_seurat_hmm@meta.data)) {
+    cat("copykat_pred column not found.\n")
+    return(NULL)
+  }
+  
+  # Get unique hybrid types and create color mapping
+  unique_hybrids <- unique(merged_seurat_hmm@meta.data[[hybrid_detail_col]])
+  unique_hybrids <- unique_hybrids[!is.na(unique_hybrids)]
+  
+  # Create color vector for violin plot
+  violin_colors <- rep("lightgray", length(unique_hybrids))
+  names(violin_colors) <- unique_hybrids
+  
+  # Apply hybrid colors where available
+  for(hybrid_type in unique_hybrids) {
+    if(hybrid_type %in% names(hybrid_colors)) {
+      violin_colors[hybrid_type] <- hybrid_colors[hybrid_type]
+    }
+  }
+  
+  # Create stacked bar plot for categorical aneuploidy data
+  plot_data <- merged_seurat_hmm@meta.data %>%
+    filter(!is.na(.data[[aneuploidy_col]]) & !is.na(.data[[hybrid_detail_col]])) %>%
+    group_by(.data[[hybrid_detail_col]], .data[[aneuploidy_col]]) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    group_by(.data[[hybrid_detail_col]]) %>%
+    mutate(
+      total = sum(count),
+      percentage = count / total * 100
+    )
+  
+  # Get unique hybrid types and create color mapping for the bars
+  unique_hybrids <- unique(plot_data[[hybrid_detail_col]])
+  
+  p_panel_p <- ggplot(plot_data, aes(x = .data[[hybrid_detail_col]], y = percentage, fill = .data[[aneuploidy_col]])) +
+    geom_bar(stat = "identity", position = "stack") +
+    scale_fill_manual(values = c("diploid" = "lightblue", "aneuploid" = "darkred")) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      axis.text.y = element_text(size = 8),
+      axis.title = element_text(size = 10),
+      plot.title = element_text(size = 12, face = "bold"),
+      legend.position = "bottom",
+      legend.title = element_text(size = 8),
+      legend.text = element_text(size = 8)
+    ) +
+    labs(
+      title = "Panel P: Aneuploidy by Hybrid Detail",
+      x = "Hybrid Type",
+      y = "Percentage (%)",
+      fill = "Aneuploidy Status"
+    )
+  
+  return(p_panel_p)
+}
+
+# ========================================
+# CREATE ALL PANELS
+# ========================================
+
+# Create Panel N
+panel_n <- create_panel_n_hybrid_umap()
+if(!is.null(panel_n)) {
+  print(panel_n)
+  cat("Panel N created successfully.\n")
+} else {
+  cat("Failed to create Panel N.\n")
+}
+
+# Create Panel O
+panel_o <- create_panel_o_violin()
+if(!is.null(panel_o)) {
+  print(panel_o)
+  cat("Panel O created successfully.\n")
+} else {
+  cat("Failed to create Panel O.\n")
+}
+
+# Create Panel P
+panel_p <- create_panel_p_violin()
+if(!is.null(panel_p)) {
+  print(panel_p)
+  cat("Panel P created successfully.\n")
+} else {
+  cat("Failed to create Panel P.\n")
+}
+
+# ========================================
+# SAVE PLOTS
+# ========================================
+
+# Create date prefix
+date_prefix <- "250725"
+
+# Save individual plots as PNG
+if(!is.null(panel_n)) {
+  ggsave(paste0(date_prefix, ".Panel N - Hybrid UMAP.png"), 
+         plot = panel_n, width = 6, height = 5, dpi = 300)
+  cat("Saved:", paste0(date_prefix, ".Panel N - Hybrid UMAP.png"), "\n")
+}
+
+if(!is.null(panel_o)) {
+  ggsave(paste0(date_prefix, ".Panel O - Aneuploidy by Final Annotation.png"), 
+         plot = panel_o, width = 8, height = 6, dpi = 300)
+  cat("Saved:", paste0(date_prefix, ".Panel O - Aneuploidy by Final Annotation.png"), "\n")
+}
+
+if(!is.null(panel_p)) {
+  ggsave(paste0(date_prefix, ".Panel P - Aneuploidy by Hybrid Detail.png"), 
+         plot = panel_p, width = 8, height = 6, dpi = 300)
+  cat("Saved:", paste0(date_prefix, ".Panel P - Aneuploidy by Hybrid Detail.png"), "\n")
+}
+
+# ========================================
+# OPTIONAL: SAVE AS PDF IN COMBINED FILE
+# ========================================
+
+save_as_pdf <- TRUE  # Set to FALSE if you don't want PDF output
+
+if(save_as_pdf) {
+  cat("Creating combined PDF...\n")
+  
+  pdf(paste0(date_prefix, ".Fig7Final.pdf"), width = 12, height = 16)
+  
+  # Create a combined layout
+  plots_to_combine <- list()
+  if(!is.null(panel_n)) plots_to_combine[["Panel N"]] <- panel_n
+  if(!is.null(panel_o)) plots_to_combine[["Panel O"]] <- panel_o
+  if(!is.null(panel_p)) plots_to_combine[["Panel P"]] <- panel_p
+  
+  if(length(plots_to_combine) > 0) {
+    # Arrange plots vertically
+    combined_plot <- wrap_plots(plots_to_combine, ncol = 1)
+    combined_plot <- combined_plot + 
+      plot_annotation(
+        title = "Figure 7 Final - Panels N, O, P",
+        theme = theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5))
+      )
+    
+    print(combined_plot)
+  }
+  
+  dev.off()
+  cat("Saved combined PDF:", paste0(date_prefix, ".Fig7Final.pdf"), "\n")
+}
+
+# ========================================
+# SUMMARY
+# ========================================
+
+cat("\n=== SUMMARY ===\n")
+cat(sprintf("Panel N (Hybrid UMAP): %s\n", ifelse(!is.null(panel_n), "✓ Created", "✗ Failed")))
+cat(sprintf("Panel O (Aneuploidy by Final Annotation): %s\n", ifelse(!is.null(panel_o), "✓ Created", "✗ Failed")))
+cat(sprintf("Panel P (Aneuploidy by Hybrid Detail): %s\n", ifelse(!is.null(panel_p), "✓ Created", "✗ Failed")))
+
+if(save_as_pdf) {
+  cat(sprintf("Combined PDF: ✓ Created as %s.Fig7Final.pdf\n", date_prefix))
+}
+
+cat("\nHybrid colors used:\n")
+for(i in 1:length(hybrid_colors)) {
+  cat(sprintf("  %s: %s\n", names(hybrid_colors)[i], hybrid_colors[i]))
+}
+```

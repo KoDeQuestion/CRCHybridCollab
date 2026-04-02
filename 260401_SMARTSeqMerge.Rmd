@@ -1,0 +1,536 @@
+---
+title: "SMART-Seq Patient Merge"
+author: "KQ"
+date: "2025-07-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Initial Set Up
+```{r}
+setwd("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq")
+#/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeqExp2_QC
+```
+# Set Seed
+```{r}
+set.seed(34)
+```
+# Load Libraries Required
+```{r}
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(viridis)
+library(ggrepel)
+library(dplyr)
+library(stringr)
+library(RColorBrewer)
+library(tibble)
+library(enrichplot)
+```
+## Process Raw Data for Each Library
+# Process through default steps for CRC177 Tumor1
+```{r}
+counts<-read.delim(file="250306_smartseq3.bbrd.q10.filt.srt.counts.tsv")
+CRC177Tumor1 <- CreateSeuratObject(counts = counts, project = "SmartDeep_CRC177Tumor1", min.features = 100)
+CRC177Tumor1 <- NormalizeData(object = CRC177Tumor1)
+CRC177Tumor1 <- FindVariableFeatures(object = CRC177Tumor1)
+CRC177Tumor1 <- ScaleData(object = CRC177Tumor1)
+
+dim(CRC177Tumor1) #27096    92
+#It probably means that for 3 cells we have less than 100 features. 
+
+CRC177Tumor1 <- RunPCA(object = CRC177Tumor1, npcs = 91) #One less than Column Value
+
+CRC177Tumor1 <- FindNeighbors(object = CRC177Tumor1, dims = 1:91)
+CRC177Tumor1 <- FindClusters(object = CRC177Tumor1)
+
+#Run UMAP
+CRC177Tumor1 <- RunUMAP(object = CRC177Tumor1, dims = 1:10)
+
+#Plot UMAP
+DimPlot(CRC177Tumor1, reduction = "umap") + plot_annotation(title = "CRC177Tumor1")
+
+#Plot metadata
+VlnPlot(CRC177Tumor1, features = c("nFeature_RNA","nCount_RNA")) + plot_annotation(title = "CRC177Tumor1")
+
+# Add CellType metadata to the Seurat object
+CRC177Tumor1$CellType <- "CRC177Tumor1"
+
+# Verify that the metadata has been added
+head(CRC177Tumor1@meta.data)
+```
+# Adding Metadata
+```{r}
+library(tibble)
+
+# Add cell names as a column
+CRC177Tumor1@meta.data <- rownames_to_column(CRC177Tumor1@meta.data, var = "cell_names_CRC177Tumor1")
+
+# Read the well cell type data
+well_celltype_data_CRC177Tumor1 <- read.csv("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/WellAnnotationFiles/WellAnnotation_Tumor_Plate3.csv")
+
+# Merge the data frames
+CRC177Tumor1@meta.data <- merge(CRC177Tumor1@meta.data, well_celltype_data_CRC177Tumor1, by.x = "cell_names_CRC177Tumor1", by.y = "CellID", all.x = TRUE)
+
+# Convert the cell names column back to row names
+CRC177Tumor1@meta.data <- column_to_rownames(CRC177Tumor1@meta.data, var = "cell_names_CRC177Tumor1")
+
+# Check the result
+head(CRC177Tumor1@meta.data)
+```
+##Updating Metadata for CHC vs. THC Analysis
+```{r}
+# Update metadata for cell type
+CRC177Tumor1@meta.data$WellCellType[CRC177Tumor1@meta.data$WellCellType == "Hybrid"] <- "THC"
+# Check the result
+table(CRC177Tumor1@meta.data$WellCellType)
+# Check the overall meta data structure is unchanged
+head(CRC177Tumor1@meta.data)
+```
+```{r}
+# Pull out Patient ID
+CRC177Tumor1$PatientID <- "CRC177"
+# Check the result
+table(CRC177Tumor1@meta.data$PatientID)
+# Check the overall meta data structure is unchanged
+head(CRC177Tumor1@meta.data)
+```
+
+# Process through default steps for CRC177 PMBC1
+```{r}
+counts2<-read.delim(file="250306_smartseq1.bbrd.q10.filt.srt.counts.tsv")
+CRC177PBMC1 <- CreateSeuratObject(counts = counts2, project = "SmartDeep_CRC177PBMC1", min.features = 100)
+CRC177PBMC1 <- NormalizeData(object = CRC177PBMC1)
+CRC177PBMC1 <- FindVariableFeatures(object = CRC177PBMC1)
+CRC177PBMC1 <- ScaleData(object = CRC177PBMC1)
+
+dim(CRC177PBMC1) #23805    93
+
+CRC177PBMC1 <- RunPCA(object = CRC177PBMC1, npcs = 92) #One less than Column Value
+
+CRC177PBMC1 <- FindNeighbors(object = CRC177PBMC1, dims = 1:92)
+CRC177PBMC1 <- FindClusters(object = CRC177PBMC1)
+
+#Run UMAP
+CRC177PBMC1 <- RunUMAP(object = CRC177PBMC1, dims = 1:10)
+
+#Plot UMAP
+DimPlot(CRC177PBMC1, reduction = "umap") + plot_annotation(title = "CRC177Tumor1")
+
+#Plot metadata
+VlnPlot(CRC177PBMC1, features = c("nFeature_RNA","nCount_RNA")) + plot_annotation(title = "CRC177Tumor1")
+
+# Add CellType metadata to the Seurat object
+CRC177PBMC1$CellType <- "CRC177PBMC1"
+
+# Verify that the metadata has been added
+head(CRC177PBMC1@meta.data)
+```
+```{r}
+# Check the Start
+head(CRC177PBMC1@meta.data)
+
+# Add cell names as a column
+CRC177PBMC1@meta.data <- rownames_to_column(CRC177PBMC1@meta.data, var = "cell_names_CRC177PBMC1")
+
+# Read the well cell type data
+well_celltype_data_CRC177PBMC1 <- read.csv("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/WellAnnotationFiles/WellAnnotation_PMBC_Plate1.csv")
+
+# Merge the data frames
+CRC177PBMC1@meta.data <- merge(CRC177PBMC1@meta.data, well_celltype_data_CRC177PBMC1, by.x = "cell_names_CRC177PBMC1", by.y = "CellID", all.x = TRUE)
+
+# Convert the cell names column back to row names
+CRC177PBMC1@meta.data <- column_to_rownames(CRC177PBMC1@meta.data, var = "cell_names_CRC177PBMC1")
+
+# Check the result
+head(CRC177PBMC1@meta.data)
+```
+# Updating Metadata for CHC vs. THC Analysis
+```{r}
+# Update metadata for cell type
+CRC177PBMC1@meta.data$WellCellType[CRC177PBMC1@meta.data$WellCellType == "Hybrid"] <- "CHC"
+# Check the result
+table(CRC177PBMC1@meta.data$WellCellType)
+# Check the overall meta data structure is unchanged
+head(CRC177PBMC1@meta.data)
+```
+```{r}
+# Pull out Patient ID
+CRC177PBMC1$PatientID <- "CRC177"
+# Check the result
+table(CRC177PBMC1@meta.data$PatientID)
+# Check the overall meta data structure is unchanged
+head(CRC177PBMC1@meta.data)
+```
+# Process through default steps for CRC177 PMBC2
+```{r}
+counts3<-read.delim(file="250306_smartseq2.bbrd.q10.filt.srt.counts.tsv")
+CRC177PBMC2 <- CreateSeuratObject(counts = counts3, project = "SmartDeep_CRC177PBMC2", min.features = 100)
+CRC177PBMC2 <- NormalizeData(object = CRC177PBMC2)
+CRC177PBMC2 <- FindVariableFeatures(object = CRC177PBMC2)
+CRC177PBMC2 <- ScaleData(object = CRC177PBMC2)
+
+dim(CRC177PBMC2) #25962    88
+
+CRC177PBMC2 <- RunPCA(object = CRC177PBMC2, npcs = 87) #One less than Column Value
+
+CRC177PBMC2 <- FindNeighbors(object = CRC177PBMC2, dims = 1:87)
+CRC177PBMC2 <- FindClusters(object = CRC177PBMC2)
+
+#Run UMAP
+CRC177PBMC2 <- RunUMAP(object = CRC177PBMC2, dims = 1:10)
+
+#Plot UMAP
+DimPlot(CRC177PBMC2, reduction = "umap") + plot_annotation(title = "CRC177PBMC2")
+
+#Plot metadata
+VlnPlot(CRC177PBMC2, features = c("nFeature_RNA","nCount_RNA")) + plot_annotation(title = "CRC177PBMC2")
+
+# Add CellType metadata to the Seurat object
+CRC177PBMC2$CellType <- "CRC177PBMC2"
+
+# Verify that the metadata has been added
+head(CRC177PBMC2@meta.data)
+```
+```{r}
+# Check the Start
+head(CRC177PBMC2@meta.data)
+
+# Add cell names as a column
+CRC177PBMC2@meta.data <- rownames_to_column(CRC177PBMC2@meta.data, var = "cell_names_CRC177PBMC2")
+
+# Read the well cell type data
+well_celltype_data_CRC177PBMC2 <- read.csv("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/WellAnnotationFiles/WellAnnotation_PMBC_Plate2.csv")
+
+# Merge the data frames
+CRC177PBMC2@meta.data <- merge(CRC177PBMC2@meta.data, well_celltype_data_CRC177PBMC2, by.x = "cell_names_CRC177PBMC2", by.y = "CellID", all.x = TRUE)
+
+# Convert the cell names column back to row names
+CRC177PBMC2@meta.data <- column_to_rownames(CRC177PBMC2@meta.data, var = "cell_names_CRC177PBMC2")
+
+# Check the result
+head(CRC177PBMC2@meta.data)
+```
+# Updating Metadata for CHC vs. THC Analysis
+```{r}
+# Update metadata for cell type
+CRC177PBMC2@meta.data$WellCellType[CRC177PBMC2@meta.data$WellCellType == "Hybrid"] <- "CHC"
+# Check the result
+table(CRC177PBMC2@meta.data$WellCellType)
+# Check the overall meta data structure is unchanged
+head(CRC177PBMC2@meta.data)
+```
+```{r}
+# Pull out Patient ID
+CRC177PBMC2$PatientID <- "CRC177"
+# Check the result
+table(CRC177PBMC2@meta.data$PatientID)
+# Check the overall meta data structure is unchanged
+head(CRC177PBMC2@meta.data)
+```
+
+# Process through default steps for CRC179 PBMC Plate 1
+```{r}
+counts4<-read.delim(file="250226_smartseq1.bbrd.q10.filt.srt.counts.tsv")
+CRC179PBMC1 <- CreateSeuratObject(counts = counts4, project = "SmartDeep_CRC179PBMC1", min.features = 100)
+CRC179PBMC1 <- NormalizeData(object = CRC179PBMC1)
+CRC179PBMC1 <- FindVariableFeatures(object = CRC179PBMC1)
+CRC179PBMC1 <- ScaleData(object = CRC179PBMC1)
+
+dim(CRC179PBMC1) #21322    90
+
+CRC179PBMC1 <- RunPCA(object = CRC179PBMC1, npcs = 89) #One less than Column Value
+
+CRC179PBMC1 <- FindNeighbors(object = CRC179PBMC1, dims = 1:89)
+CRC179PBMC1 <- FindClusters(object = CRC179PBMC1)
+
+#Run UMAP
+CRC179PBMC1 <- RunUMAP(object = CRC179PBMC1, dims = 1:10)
+
+#Plot UMAP
+DimPlot(CRC179PBMC1, reduction = "umap") + plot_annotation(title = "CRC179PBMC1")
+
+#Plot metadata
+VlnPlot(CRC179PBMC1, features = c("nFeature_RNA","nCount_RNA")) + plot_annotation(title = "CRC179PBMC1")
+
+# Add CellType metadata to the Seurat object
+CRC179PBMC1$CellType <- "CRC179PBMC1"
+
+# Verify that the metadata has been added
+head(CRC179PBMC1@meta.data)
+```
+```{r}
+# Check the Start
+head(CRC179PBMC1@meta.data)
+
+# Add cell names as a column
+CRC179PBMC1@meta.data <- rownames_to_column(CRC179PBMC1@meta.data, var = "cell_names_CRC179PBMC1")
+
+# Read the well cell type data
+well_celltype_data_CRC179PMBC1 <- read.csv("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/WellAnnotationFiles/WellAnnotation_PMBC_Plate1.csv")
+
+# Merge the data frames
+CRC179PBMC1@meta.data <- merge(CRC179PBMC1@meta.data, well_celltype_data_CRC179PMBC1, by.x = "cell_names_CRC179PBMC1", by.y = "CellID", all.x = TRUE)
+
+# Convert the cell names column back to row names
+CRC179PBMC1@meta.data <- column_to_rownames(CRC179PBMC1@meta.data, var = "cell_names_CRC179PBMC1")
+
+# Check the result
+head(CRC179PBMC1@meta.data)
+```
+##Updating Metadata for CHC vs. THC Analysis
+```{r}
+# Update metadata for cell type
+CRC179PBMC1@meta.data$WellCellType[CRC179PBMC1@meta.data$WellCellType == "Hybrid"] <- "CHC"
+# Check the result
+table(CRC179PBMC1@meta.data$WellCellType)
+# Check the overall meta data structure is unchanged
+head(CRC179PBMC1@meta.data)
+```
+```{r}
+# Pull out Patient ID
+CRC179PBMC1$PatientID <- "CRC179"
+# Check the result
+table(CRC179PBMC1@meta.data$PatientID)
+# Check the overall meta data structure is unchanged
+head(CRC179PBMC1@meta.data)
+```
+
+# Process through default steps for CRC176 PBMC Plate 1
+```{r}
+counts5<-read.delim(file="250226_smartseq2.bbrd.q10.filt.srt.counts.tsv")
+CRC176PBMC1 <- CreateSeuratObject(counts = counts5, project = "SmartDeep_CRC176PBMC1", min.features = 100)
+CRC176PBMC1 <- NormalizeData(object = CRC176PBMC1)
+CRC176PBMC1 <- FindVariableFeatures(object = CRC176PBMC1)
+CRC176PBMC1 <- ScaleData(object = CRC176PBMC1)
+
+dim(CRC176PBMC1) #21694    91
+
+CRC176PBMC1 <- RunPCA(object = CRC176PBMC1, npcs = 90) #One less than Column Value
+
+CRC176PBMC1 <- FindNeighbors(object = CRC176PBMC1, dims = 1:90)
+CRC176PBMC1 <- FindClusters(object = CRC176PBMC1)
+
+#Run UMAP
+CRC176PBMC1 <- RunUMAP(object = CRC176PBMC1, dims = 1:10)
+ 
+#Plot UMAP
+DimPlot(CRC176PBMC1, reduction = "umap") + plot_annotation(title = "CRC176PBMC1")
+
+#Plot metadata
+VlnPlot(CRC176PBMC1, features = c("nFeature_RNA","nCount_RNA")) + plot_annotation(title = "CRC176PBMC1")
+
+# Add CellType metadata to the Seurat object
+CRC176PBMC1$CellType <- "CRC176PBMC1"
+
+# Verify that the metadata has been added
+head(CRC176PBMC1@meta.data)
+```
+
+```{r}
+# Check the Start
+head(CRC176PBMC1@meta.data)
+
+# Add cell names as a column
+CRC176PBMC1@meta.data <- rownames_to_column(CRC176PBMC1@meta.data, var = "cell_names_CRC176PBMC1")
+
+# Read the well cell type data
+well_celltype_data_CRC176PMBC1 <- read.csv("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/WellAnnotationFiles/WellAnnotation_PMBC_Plate2.csv")
+
+# Merge the data frames
+CRC176PBMC1@meta.data <- merge(CRC176PBMC1@meta.data, well_celltype_data_CRC176PMBC1, by.x = "cell_names_CRC176PBMC1", by.y = "CellID", all.x = TRUE)
+
+# Convert the cell names column back to row names
+CRC176PBMC1@meta.data <- column_to_rownames(CRC176PBMC1@meta.data, var = "cell_names_CRC176PBMC1")
+
+# Check the result
+head(CRC176PBMC1@meta.data)
+```
+##Updating Metadata for CHC vs. THC Analysis
+```{r}
+# Update metadata for cell type
+CRC176PBMC1@meta.data$WellCellType[CRC176PBMC1@meta.data$WellCellType == "Hybrid"] <- "CHC"
+# Check the result
+table(CRC176PBMC1@meta.data$WellCellType)
+# Check the overall meta data structure is unchanged
+head(CRC176PBMC1@meta.data)
+```
+```{r}
+# Pull out Patient ID
+CRC176PBMC1$PatientID <- "CRC176"
+# Check the result
+table(CRC176PBMC1@meta.data$PatientID)
+# Check the overall meta data structure is unchanged
+head(CRC176PBMC1@meta.data)
+```
+
+# Process through default steps for CRC176 Tumor Plate 1
+```{r}
+counts6<-read.delim(file="250226_smartseq3.bbrd.q10.filt.srt.counts.tsv")
+CRC176Tumor1 <- CreateSeuratObject(counts = counts6, project = "SmartDeep_CRC176Tumor1", min.features = 100)
+CRC176Tumor1 <- NormalizeData(object = CRC176Tumor1)
+CRC176Tumor1 <- FindVariableFeatures(object = CRC176Tumor1)
+CRC176Tumor1 <- ScaleData(object = CRC176Tumor1)
+
+dim(CRC176Tumor1) #34747    85
+
+CRC176Tumor1 <- RunPCA(object = CRC176Tumor1, npcs = 84) #One less than Column Value
+
+CRC176Tumor1 <- FindNeighbors(object = CRC176Tumor1, dims = 1:84)
+CRC176Tumor1 <- FindClusters(object = CRC176Tumor1)
+
+#Run UMAP
+CRC176Tumor1 <- RunUMAP(object = CRC176Tumor1, dims = 1:10)
+
+#Plot UMAP
+DimPlot(CRC176Tumor1, reduction = "umap") + plot_annotation(title = "CRC176Tumor1")
+
+#Plot metadata
+VlnPlot(CRC176Tumor1, features = c("nFeature_RNA","nCount_RNA")) + plot_annotation(title = "CRC176Tumor1")
+
+# Add CellType metadata to the Seurat object
+CRC176Tumor1$CellType <- "CRC176Tumor1"
+
+# Verify that the metadata has been added
+head(CRC176Tumor1@meta.data)
+```
+
+```{r}
+# Check the Start
+head(CRC176Tumor1@meta.data)
+
+# Add cell names as a column
+CRC176Tumor1@meta.data <- rownames_to_column(CRC176Tumor1@meta.data, var = "cell_names_CRC176Tumor1")
+
+# Read the well cell type data
+well_celltype_data_CRC176Tumor1 <- read.csv("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/WellAnnotationFiles/WellAnnotation_Tumor_Plate3.csv")
+
+# Merge the data frames
+CRC176Tumor1@meta.data <- merge(CRC176Tumor1@meta.data, well_celltype_data_CRC176Tumor1, by.x = "cell_names_CRC176Tumor1", by.y = "CellID", all.x = TRUE)
+
+# Convert the cell names column back to row names
+CRC176Tumor1@meta.data <- column_to_rownames(CRC176Tumor1@meta.data, var = "cell_names_CRC176Tumor1")
+
+# Check the result
+head(CRC176Tumor1@meta.data)
+```
+##Updating Metadata for CHC vs. THC Analysis
+```{r}
+# Update metadata for cell type
+CRC176Tumor1@meta.data$WellCellType[CRC176Tumor1@meta.data$WellCellType == "Hybrid"] <- "THC"
+# Check the result
+table(CRC176Tumor1@meta.data$WellCellType)
+# Check the overall meta data structure is unchanged
+head(CRC176Tumor1@meta.data)
+```
+```{r}
+# Pull out Patient ID
+CRC176Tumor1$PatientID <- "CRC176"
+# Check the result
+table(CRC176Tumor1@meta.data$PatientID)
+# Check the overall meta data structure is unchanged
+head(CRC176Tumor1@meta.data)
+```
+
+# PreMerge Trouble Shooting
+```{r}
+# Check metadata columns in each Seurat object
+head(CRC177Tumor1@meta.data)
+head(CRC177PBMC1@meta.data)
+head(CRC177PBMC2@meta.data)
+head(CRC176PBMC1@meta.data)
+head(CRC176Tumor1@meta.data)
+head(CRC179PBMC1@meta.data)
+```
+```{r}
+sum(is.na(CRC177PBMC2$CellType))
+sum(is.na(CRC177PBMC2$WellCellType))
+sum(is.na(CRC177PBMC1$CellType))
+sum(is.na(CRC177PBMC1$WellCellType))
+sum(is.na(CRC176PBMC1$CellType))
+sum(is.na(CRC176PBMC1$WellCellType))
+sum(is.na(CRC179PBMC1$CellType))
+sum(is.na(CRC179PBMC1$WellCellType))
+sum(is.na(CRC177Tumor1$CellType))
+sum(is.na(CRC177Tumor1$WellCellType))
+sum(is.na(CRC176Tumor1$CellType))
+sum(is.na(CRC176Tumor1$WellCellType))
+```
+```{r}
+any(duplicated(colnames(CRC177Tumor1)))
+any(duplicated(colnames(CRC177PBMC1)))
+any(duplicated(colnames(CRC176PBMC1)))
+any(duplicated(colnames(CRC177PBMC2)))
+any(duplicated(colnames(CRC179PBMC1)))
+any(duplicated(colnames(CRC176Tumor1)))
+```
+
+# Attempt to Merge
+```{r}
+# Merge the Seurat objects with unique cell names
+merged_data_all <- merge(CRC177Tumor1, 
+                     y = list(CRC177PBMC1, CRC177PBMC2, CRC176PBMC1, CRC176Tumor1, CRC179PBMC1), 
+                     add.cell.ids = c("CRC177Tumor1", "CRC177PBMC1", "CRC177PBMC2", "CRC176PBMC1", "CRC176Tumor1", "CRC179PMBC1"))
+
+# Verify the merged object
+print(merged_data_all)
+```
+
+# Process Merged Seurat Object
+```{r}
+merged_data_all <- NormalizeData(object = merged_data_all) #Might not be required again
+merged_data_all <- FindVariableFeatures(merged_data_all, selection.method = "vst", nfeatures = 2000) 
+merged_data_all <- ScaleData(object = merged_data_all)
+```
+```{r}
+dim(merged_data_all) #40287   539
+# Check the dimensions of the scaled data matrix
+```
+
+# Run PCA
+```{r}
+# Run PCA
+# Run PCA with a reduced number of PCs
+merged_data_all <- RunPCA(merged_data_all, npcs = 50)  # Adjust npcs as needed
+# Verify the PCA results
+print(merged_data_all)
+```
+```{r}
+# Check the variance explained by each PC
+ElbowPlot(merged_data_all) #10 looks to be optimal
+```
+# Determine Clusters
+```{r}
+merged_data_all <- FindNeighbors(object = merged_data_all, dims = 1:10)
+```
+#Plot UMAP
+```{r}
+set.seed(48)
+merged_data_all <- FindClusters(merged_data_all, resolution = 0.9) # Adjust the resolution value as needed. I decided on this, because it separates out the Cluster 5 - one of which ends up in CHC3 and one of which is largely composed of THC cells. 
+merged_data_all <- RunUMAP(merged_data_all, 
+                          dims = 1:10, 
+                          seed.use = 48,     # Explicit UMAP seed
+                          verbose = TRUE)
+DimPlot(merged_data_all, reduction = "umap", pt.size = 2, alpha = 0.8) +
+  scale_color_viridis(discrete = TRUE) + plot_annotation(title = "0.9")
+
+set.seed(48)
+merged_data_all <- FindClusters(merged_data_all, resolution = 0.75) # Adjust the resolution value as needed
+merged_data_all <- RunUMAP(merged_data_all, 
+                          dims = 1:10, 
+                          seed.use = 48,     # Explicit UMAP seed
+                          verbose = TRUE)
+DimPlot(merged_data_all, reduction = "umap", pt.size = 2, alpha = 0.8) +
+  scale_color_viridis(discrete = TRUE) + plot_annotation(title = "0.75")
+```
+
+#Save RDS of Seurat Object
+```{r}
+saveRDS(merged_data_all, file = "/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/SmartSeqMerged.rds")
+```

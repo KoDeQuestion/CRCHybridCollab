@@ -1,0 +1,1140 @@
+---
+title: "TumorModule"
+author: "KQ"
+date: "2025-07-29"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load in Merged Object
+```{r}
+merged_data_all_7 <- readRDS("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/SmartSeq_CRC177_DeepSeq/SmartSeqMerged.rds")
+```
+# Generate EPCAM TUMOR MODULE
+```{r}
+# ========================================
+# EPCAM TUMOR vs CD45 IMMUNE GENE MODULE GENERATION
+# ========================================
+# This script generates gene modules for EpcamTumor cells vs CD45Immune cells
+# and saves results with the "TumorModule" prefix
+
+library(Seurat)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# ========================================
+# PART 1: Data Preparation and Validation
+# ========================================
+
+# Check if required columns exist
+required_cols <- c("WellCellType")
+missing_cols <- required_cols[!required_cols %in% colnames(merged_data_all_7@meta.data)]
+if(length(missing_cols) > 0) {
+  stop(paste("Missing required columns:", paste(missing_cols, collapse = ", ")))
+}
+
+# Check available cell types
+cat("=== CELL TYPE DISTRIBUTION ===\n")
+cat("WellCellType counts:\n")
+print(table(merged_data_all_7$WellCellType))
+
+# Define cell groups for analysis
+target_group <- "EpcamTumor"
+control_group <- "CD45Immune"
+
+# Validate cell counts for each group
+epcam_count <- sum(merged_data_all_7$WellCellType == target_group)
+cd45_count <- sum(merged_data_all_7$WellCellType == control_group)
+
+cat(paste("EpcamTumor cells:", epcam_count, "\n"))
+cat(paste("CD45Immune cells:", cd45_count, "\n"))
+
+if(epcam_count < 10 || cd45_count < 10) {
+  warning("Very few cells in one or both groups - results may be unreliable")
+}
+
+# Join layers in the Seurat object
+cat("Joining layers in Seurat object...\n")
+merged_data_all_7 <- JoinLayers(merged_data_all_7)
+
+# ========================================
+# PART 2: Differential Expression Analysis
+# ========================================
+
+# Function to run differential expression analysis
+run_tumor_differential_analysis <- function(seurat_obj, target_group, control_group) {
+  cat(paste("Running DE analysis:", target_group, "vs", control_group, "\n"))
+
+  # Get cells for each group
+  target_cells <- rownames(seurat_obj@meta.data)[seurat_obj@meta.data$WellCellType == target_group]
+  control_cells <- rownames(seurat_obj@meta.data)[seurat_obj@meta.data$WellCellType == control_group]
+
+  cat(paste("Target (", target_group, ") cells:", length(target_cells), "\n"))
+  cat(paste("Control (", control_group, ") cells:", length(control_cells), "\n"))
+
+  if(length(target_cells) < 3 || length(control_cells) < 3) {
+    stop(paste("Insufficient cells for comparison:", target_group, "vs", control_group))
+  }
+
+  # Create temporary grouping variable
+  temp_group <- rep("Other", ncol(seurat_obj))
+  temp_group[match(target_cells, colnames(seurat_obj))] <- "EpcamTumor"
+  temp_group[match(control_cells, colnames(seurat_obj))] <- "CD45Immune"
+
+  seurat_obj$temp_comparison <- temp_group
+
+  # Set identity and run FindMarkers
+  Idents(seurat_obj) <- "temp_comparison"
+
+  tryCatch({
+    markers <- FindMarkers(
+      seurat_obj,
+      ident.1 = "EpcamTumor",
+      ident.2 = "CD45Immune",
+      test.use = "wilcox",
+      logfc.threshold = 0.25,
+      min.pct = 0.1,
+      verbose = FALSE,
+      only.pos = FALSE
+    )
+
+    # Add gene names and comparison info
+    markers$gene <- rownames(markers)
+    markers$comparison <- paste(target_group, "vs", control_group, sep = "_")
+    markers$target_group <- target_group
+    markers$control_group <- control_group
+
+    # Sort by log fold change
+    markers <- markers[order(markers$avg_log2FC, decreasing = TRUE), ]
+
+    cat(paste("Found", nrow(markers), "DE genes\n"))
+    cat(paste("Upregulated in", target_group, ":", sum(markers$avg_log2FC > 0), "\n"))
+    cat(paste("Downregulated in", target_group, ":", sum(markers$avg_log2FC < 0), "\n"))
+
+    return(markers)
+  }, error = function(e) {
+    stop(paste("Error in DE analysis:", e$message))
+  })
+}
+
+# Function to create tumor gene module from DE results
+create_tumor_gene_module <- function(de_results, min_log2fc = 0.5, max_padj = 0.05,
+                                   min_pct_diff = 0.1, n_genes_per_direction = 50) {
+  if(is.null(de_results) || nrow(de_results) == 0) {
+    return(list(up = character(0), down = character(0), all = character(0), stats = NULL))
+  }
+
+  # Filter for high-quality markers
+  module_candidates <- de_results[
+    abs(de_results$avg_log2FC) >= min_log2fc &
+    de_results$p_val_adj <= max_padj &
+    abs(de_results$pct.1 - de_results$pct.2) >= min_pct_diff,
+  ]
+
+  if(nrow(module_candidates) == 0) {
+    cat("No genes meet module criteria\n")
+    return(list(up = character(0), down = character(0), all = character(0), stats = NULL))
+  }
+
+  # Separate up and down regulated genes (relative to EpcamTumor)
+  up_genes <- module_candidates[module_candidates$avg_log2FC > 0, ]  # Higher in EpcamTumor
+  down_genes <- module_candidates[module_candidates$avg_log2FC < 0, ]  # Higher in CD45Immune
+
+  # Get top genes
+  module_up <- head(up_genes$gene, n_genes_per_direction)
+  module_down <- head(down_genes$gene, n_genes_per_direction)
+  module_all <- c(module_up, module_down)
+
+  # Create stats summary
+  stats_summary <- data.frame(
+    total_de_genes = nrow(de_results),
+    module_candidates = nrow(module_candidates),
+    tumor_enriched = length(module_up),
+    immune_enriched = length(module_down),
+    total_module_genes = length(module_all),
+    mean_abs_log2fc = round(mean(abs(module_candidates$avg_log2FC)), 3),
+    stringsAsFactors = FALSE
+  )
+
+  return(list(
+    up = module_up,
+    down = module_down,
+    all = module_all,
+    stats = stats_summary,
+    candidates = module_candidates
+  ))
+}
+
+# ========================================
+# PART 3: Run Tumor Module Analysis
+# ========================================
+
+cat("\n=== RUNNING TUMOR MODULE ANALYSIS ===\n")
+
+# Run differential expression analysis
+tumor_de_results <- run_tumor_differential_analysis(
+  merged_data_all_7,
+  target_group,
+  control_group
+)
+
+# Create gene module
+tumor_module <- create_tumor_gene_module(tumor_de_results)
+
+# Print summary
+cat("\n=== TUMOR MODULE SUMMARY ===\n")
+if(!is.null(tumor_module$stats)) {
+  stats <- tumor_module$stats
+  cat(paste("Total DE genes:", stats$total_de_genes, "\n"))
+  cat(paste("Module candidates:", stats$module_candidates, "\n"))
+  cat(paste("Tumor-enriched genes:", stats$tumor_enriched, "\n"))
+  cat(paste("Immune-enriched genes:", stats$immune_enriched, "\n"))
+  cat(paste("Total module genes:", stats$total_module_genes, "\n"))
+  cat(paste("Mean absolute log2FC:", stats$mean_abs_log2fc, "\n"))
+}
+
+# ========================================
+# PART 4: Create Visualization
+# ========================================
+
+# Function to create volcano plot for tumor module
+create_tumor_volcano_plot <- function(de_data) {
+  if(is.null(de_data) || nrow(de_data) == 0) return(NULL)
+
+  volcano_data <- de_data
+  volcano_data$significance <- ifelse(volcano_data$p_val_adj < 0.05 & abs(volcano_data$avg_log2FC) > 0.5,
+                                     "Significant", "Not Significant")
+  volcano_data$direction <- ifelse(volcano_data$avg_log2FC > 0.5 & volcano_data$p_val_adj < 0.05, "Tumor-enriched",
+                                 ifelse(volcano_data$avg_log2FC < -0.5 & volcano_data$p_val_adj < 0.05, "Immune-enriched", "NS"))
+
+  # Label top genes
+  top_tumor <- head(volcano_data[volcano_data$direction == "Tumor-enriched", ], 5)
+  top_immune <- head(volcano_data[volcano_data$direction == "Immune-enriched", ], 5)
+  volcano_data$label <- ifelse(volcano_data$gene %in% c(top_tumor$gene, top_immune$gene),
+                              volcano_data$gene, "")
+
+  p <- ggplot(volcano_data, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+    geom_point(aes(color = direction), alpha = 0.6, size = 1.2) +
+    scale_color_manual(values = c("Tumor-enriched" = "red", "Immune-enriched" = "blue", "NS" = "gray")) +
+    geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", alpha = 0.5) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", alpha = 0.5) +
+    geom_text_repel(aes(label = label), size = 3, max.overlaps = 15) +
+    theme_minimal() +
+    labs(title = "Tumor Module: EpcamTumor vs CD45Immune",
+         x = "Average log2 Fold Change (EpcamTumor vs CD45Immune)",
+         y = "-log10(Adjusted P-value)",
+         color = "Gene Enrichment") +
+    theme(legend.position = "bottom",
+          plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+
+  return(p)
+}
+
+# Create and display volcano plot
+tumor_volcano_plot <- create_tumor_volcano_plot(tumor_de_results)
+if(!is.null(tumor_volcano_plot)) {
+  print(tumor_volcano_plot)
+  ggsave("TumorModule_volcano_plot.pdf", tumor_volcano_plot, width = 10, height = 8)
+  cat("Saved volcano plot: TumorModule_volcano_plot.pdf\n")
+}
+
+# ========================================
+# PART 5: Export Tumor Module Files
+# ========================================
+
+cat("\n=== EXPORTING TUMOR MODULE FILES ===\n")
+
+# Create export data
+if(length(tumor_module$all) > 0) {
+  # Main module file
+  tumor_export_df <- data.frame(
+    Gene = tumor_module$all,
+    Direction = c(rep("Tumor-enriched", length(tumor_module$up)), 
+                  rep("Immune-enriched", length(tumor_module$down))),
+    Module = "TumorModule",
+    Comparison = "EpcamTumor_vs_CD45Immune",
+    stringsAsFactors = FALSE
+  )
+
+  # Add detailed statistics
+  if(!is.null(tumor_module$candidates)) {
+    stats_subset <- tumor_module$candidates[tumor_module$candidates$gene %in% tumor_module$all,
+                                          c("gene", "avg_log2FC", "p_val_adj", "pct.1", "pct.2")]
+    colnames(stats_subset) <- c("Gene", "Log2FC", "Adj_Pvalue", "Pct_EpcamTumor", "Pct_CD45Immune")
+    tumor_export_df <- merge(tumor_export_df, stats_subset, by = "Gene")
+    tumor_export_df <- tumor_export_df[order(tumor_export_df$Log2FC, decreasing = TRUE), ]
+  }
+
+  # Save main tumor module file
+  write.csv(tumor_export_df, "TumorModule_gene_signatures.csv", row.names = FALSE)
+  cat("Saved: TumorModule_gene_signatures.csv\n")
+
+  # Save separate files for up and down regulated genes
+  tumor_enriched <- tumor_export_df[tumor_export_df$Direction == "Tumor-enriched", ]
+  immune_enriched <- tumor_export_df[tumor_export_df$Direction == "Immune-enriched", ]
+
+  write.csv(tumor_enriched, "TumorModule_tumor_enriched_genes.csv", row.names = FALSE)
+  write.csv(immune_enriched, "TumorModule_immune_enriched_genes.csv", row.names = FALSE)
+  
+  cat("Saved: TumorModule_tumor_enriched_genes.csv\n")
+  cat("Saved: TumorModule_immune_enriched_genes.csv\n")
+
+  # Create simple gene lists (just gene names)
+  write.table(tumor_module$up, "TumorModule_tumor_enriched_genelist.txt", 
+              quote = FALSE, row.names = FALSE, col.names = FALSE)
+  write.table(tumor_module$down, "TumorModule_immune_enriched_genelist.txt", 
+              quote = FALSE, row.names = FALSE, col.names = FALSE)
+  
+  cat("Saved: TumorModule_tumor_enriched_genelist.txt\n")
+  cat("Saved: TumorModule_immune_enriched_genelist.txt\n")
+}
+
+# Save complete DE results with TumorModule prefix
+write.csv(tumor_de_results, "TumorModule_complete_DE_results.csv", row.names = FALSE)
+cat("Saved: TumorModule_complete_DE_results.csv\n")
+
+# Create summary statistics file
+if(!is.null(tumor_module$stats)) {
+  tumor_summary <- data.frame(
+    Analysis = "TumorModule",
+    Comparison = "EpcamTumor_vs_CD45Immune",
+    Target_Cells = epcam_count,
+    Control_Cells = cd45_count,
+    Total_DE_Genes = tumor_module$stats$total_de_genes,
+    Module_Candidates = tumor_module$stats$module_candidates,
+    Tumor_Enriched_Genes = tumor_module$stats$tumor_enriched,
+    Immune_Enriched_Genes = tumor_module$stats$immune_enriched,
+    Total_Module_Genes = tumor_module$stats$total_module_genes,
+    Mean_Abs_Log2FC = tumor_module$stats$mean_abs_log2fc,
+    stringsAsFactors = FALSE
+  )
+  
+  write.csv(tumor_summary, "TumorModule_analysis_summary.csv", row.names = FALSE)
+  cat("Saved: TumorModule_analysis_summary.csv\n")
+}
+
+# ========================================
+# PART 6: Display Final Results
+# ========================================
+
+cat("\n=== TUMOR MODULE GENE LISTS ===\n")
+
+if(length(tumor_module$up) > 0) {
+  cat("TUMOR-ENRICHED GENES (", length(tumor_module$up), "):\n")
+  cat(paste(tumor_module$up, collapse = ", "), "\n\n")
+}
+
+if(length(tumor_module$down) > 0) {
+  cat("IMMUNE-ENRICHED GENES (", length(tumor_module$down), "):\n")
+  cat(paste(tumor_module$down, collapse = ", "), "\n\n")
+}
+
+cat("\n=== ANALYSIS COMPLETE ===\n")
+cat("Generated tumor module with", length(tumor_module$all), "genes\n")
+cat("Files saved with 'TumorModule' prefix:\n")
+cat("- TumorModule_gene_signatures.csv (main module file)\n")
+cat("- TumorModule_tumor_enriched_genes.csv\n")
+cat("- TumorModule_immune_enriched_genes.csv\n")
+cat("- TumorModule_tumor_enriched_genelist.txt\n")
+cat("- TumorModule_immune_enriched_genelist.txt\n")
+cat("- TumorModule_complete_DE_results.csv\n")
+cat("- TumorModule_analysis_summary.csv\n")
+cat("- TumorModule_volcano_plot.pdf\n")
+
+cat("\nTumor module analysis completed successfully!\n")
+```
+# Apply Tumor Module
+```{r}
+# ========================================
+# TUMOR MODULE APPLICATION TO NEW DATASET
+# ========================================
+# This script applies the TumorModule gene signature to a new Seurat object
+
+library(Seurat)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(Matrix)
+
+# ========================================
+# PART 0: Load Data and TumorModule
+# ========================================
+
+# Load the new Seurat object
+cat("Loading Seurat object...\n")
+merged_seurat_hmm <- readRDS(file = "merged_seurat_sophisticated_triple_annotated.rds")
+
+# Load the TumorModule gene signatures CSV
+cat("Loading TumorModule signatures...\n")
+tumor_module_export <- read.csv("TumorModule_gene_signatures.csv", stringsAsFactors = FALSE)
+
+# Display the structure of the loaded module
+cat("TumorModule structure:\n")
+print(head(tumor_module_export))
+cat("Total genes in TumorModule:", nrow(tumor_module_export), "\n")
+cat("Tumor-enriched genes:", sum(tumor_module_export$Direction == "Tumor-enriched"), "\n")
+cat("Immune-enriched genes:", sum(tumor_module_export$Direction == "Immune-enriched"), "\n")
+
+# ========================================
+# PART 1: Prepare TumorModule Gene Lists
+# ========================================
+
+# Extract genes by direction
+tumor_enriched_genes <- tumor_module_export$Gene[tumor_module_export$Direction == "Tumor-enriched"]
+immune_enriched_genes <- tumor_module_export$Gene[tumor_module_export$Direction == "Immune-enriched"]
+
+cat("\nOriginal TumorModule genes:\n")
+cat("Tumor-enriched:", length(tumor_enriched_genes), "genes\n")
+cat("Immune-enriched:", length(immune_enriched_genes), "genes\n")
+
+# Check which genes are present in the new dataset
+genes_in_data_tumor <- tumor_enriched_genes[tumor_enriched_genes %in% rownames(merged_seurat_hmm)]
+genes_in_data_immune <- immune_enriched_genes[immune_enriched_genes %in% rownames(merged_seurat_hmm)]
+missing_genes_tumor <- tumor_enriched_genes[!tumor_enriched_genes %in% rownames(merged_seurat_hmm)]
+missing_genes_immune <- immune_enriched_genes[!immune_enriched_genes %in% rownames(merged_seurat_hmm)]
+
+cat("\nGenes available in new dataset:\n")
+cat("Tumor-enriched genes found:", length(genes_in_data_tumor), "of", length(tumor_enriched_genes), "\n")
+cat("Immune-enriched genes found:", length(genes_in_data_immune), "of", length(immune_enriched_genes), "\n")
+
+if (length(missing_genes_tumor) > 0) {
+  cat("Missing tumor-enriched genes:", paste(head(missing_genes_tumor, 10), collapse = ", "))
+  if (length(missing_genes_tumor) > 10) cat(" ... and", length(missing_genes_tumor) - 10, "more")
+  cat("\n")
+}
+
+if (length(missing_genes_immune) > 0) {
+  cat("Missing immune-enriched genes:", paste(head(missing_genes_immune, 10), collapse = ", "))
+  if (length(missing_genes_immune) > 10) cat(" ... and", length(missing_genes_immune) - 10, "more")
+  cat("\n")
+}
+
+# Store gene lists for TumorModule
+tumor_module_gene_lists <- list(
+  Tumor_Enriched = genes_in_data_tumor,
+  Immune_Enriched = genes_in_data_immune
+)
+
+# ========================================
+# PART 2: Calculate TumorModule Scores
+# ========================================
+
+cat("\n=== Calculating TumorModule Scores ===\n")
+
+# Set default assay - Updated for Seurat v5
+if ("SCT" %in% names(merged_seurat_hmm@assays)) {
+  DefaultAssay(merged_seurat_hmm) <- "SCT"
+  # For Seurat v5, use 'data' layer
+  expr_data <- LayerData(merged_seurat_hmm, assay = "SCT", layer = "data")
+  cat("Using SCT assay for scoring\n")
+} else {
+  DefaultAssay(merged_seurat_hmm) <- "RNA"
+  # For Seurat v5, use 'data' layer  
+  expr_data <- LayerData(merged_seurat_hmm, assay = "RNA", layer = "data")
+  cat("Using RNA assay for scoring\n")
+}
+
+# Skip if no genes available
+if (length(genes_in_data_tumor) == 0 && length(genes_in_data_immune) == 0) {
+  stop("No valid genes found for TumorModule - cannot proceed.")
+}
+
+# Method 1: Using AddModuleScore with proper gene list structure
+gene_lists <- list()
+if (length(genes_in_data_tumor) > 0) {
+  gene_lists[["Tumor_Enriched"]] <- genes_in_data_tumor
+}
+if (length(genes_in_data_immune) > 0) {
+  gene_lists[["Immune_Enriched"]] <- genes_in_data_immune
+}
+
+if (length(gene_lists) > 0) {
+  # Calculate control size
+  ctrl_size <- min(100, max(length(genes_in_data_tumor), length(genes_in_data_immune), 5))
+  
+  cat("Using control size:", ctrl_size, "\n")
+  
+  merged_seurat_hmm <- AddModuleScore(
+    merged_seurat_hmm,
+    features = gene_lists,
+    name = "TumorModule_ModuleScore",
+    ctrl = ctrl_size,
+    seed = 42
+  )
+
+  # Extract the scores and rename properly
+  module_score_cols <- grep("TumorModule_ModuleScore", colnames(merged_seurat_hmm@meta.data), value = TRUE)
+  
+  if (length(gene_lists) == 2) {
+    # Both tumor and immune genes present
+    merged_seurat_hmm@meta.data[["TumorModule_Tumor_Score"]] <- merged_seurat_hmm@meta.data[[module_score_cols[1]]]
+    merged_seurat_hmm@meta.data[["TumorModule_Immune_Score"]] <- merged_seurat_hmm@meta.data[[module_score_cols[2]]]
+    merged_seurat_hmm@meta.data[["TumorModule_Combined_Score"]] <-
+      merged_seurat_hmm@meta.data[["TumorModule_Tumor_Score"]] - merged_seurat_hmm@meta.data[["TumorModule_Immune_Score"]]
+  } else if ("Tumor_Enriched" %in% names(gene_lists)) {
+    # Only tumor genes present
+    merged_seurat_hmm@meta.data[["TumorModule_Tumor_Score"]] <- merged_seurat_hmm@meta.data[[module_score_cols[1]]]
+    merged_seurat_hmm@meta.data[["TumorModule_Immune_Score"]] <- 0
+    merged_seurat_hmm@meta.data[["TumorModule_Combined_Score"]] <- merged_seurat_hmm@meta.data[["TumorModule_Tumor_Score"]]
+  } else if ("Immune_Enriched" %in% names(gene_lists)) {
+    # Only immune genes present
+    merged_seurat_hmm@meta.data[["TumorModule_Tumor_Score"]] <- 0
+    merged_seurat_hmm@meta.data[["TumorModule_Immune_Score"]] <- merged_seurat_hmm@meta.data[[module_score_cols[1]]]
+    merged_seurat_hmm@meta.data[["TumorModule_Combined_Score"]] <- -merged_seurat_hmm@meta.data[["TumorModule_Immune_Score"]]
+  }
+
+  # Remove temporary module score columns
+  merged_seurat_hmm@meta.data <- merged_seurat_hmm@meta.data[, !colnames(merged_seurat_hmm@meta.data) %in% module_score_cols]
+}
+
+# Method 2: Manual calculation for comparison
+if (length(genes_in_data_tumor) > 0) {
+  tumor_scores <- Matrix::colMeans(expr_data[genes_in_data_tumor, , drop = FALSE])
+} else {
+  tumor_scores <- rep(0, ncol(expr_data))
+}
+
+if (length(genes_in_data_immune) > 0) {
+  immune_scores <- Matrix::colMeans(expr_data[genes_in_data_immune, , drop = FALSE])
+} else {
+  immune_scores <- rep(0, ncol(expr_data))
+}
+
+# Add manual scores
+merged_seurat_hmm@meta.data[["TumorModule_Manual_Tumor_Score"]] <- tumor_scores
+merged_seurat_hmm@meta.data[["TumorModule_Manual_Immune_Score"]] <- immune_scores
+merged_seurat_hmm@meta.data[["TumorModule_Manual_Combined_Score"]] <- tumor_scores - immune_scores
+
+# Choose which score to use for classification
+score_name_combined <- "TumorModule_Combined_Score"
+if (!score_name_combined %in% colnames(merged_seurat_hmm@meta.data)) {
+  score_name_combined <- "TumorModule_Manual_Combined_Score"
+  cat("Using manual combined score for classification\n")
+}
+
+# Define thresholds for classification
+threshold_high <- quantile(merged_seurat_hmm@meta.data[[score_name_combined]], 0.8, na.rm = TRUE)
+threshold_low <- quantile(merged_seurat_hmm@meta.data[[score_name_combined]], 0.2, na.rm = TRUE)
+
+cat("High threshold (80th percentile):", round(threshold_high, 3), "\n")
+cat("Low threshold (20th percentile):", round(threshold_low, 3), "\n")
+
+# Classify cells based on TumorModule score
+merged_seurat_hmm@meta.data[["TumorModule_Classification"]] <- ifelse(
+  merged_seurat_hmm@meta.data[[score_name_combined]] >= threshold_high, "High_TumorModule",
+  ifelse(merged_seurat_hmm@meta.data[[score_name_combined]] <= threshold_low, "Low_TumorModule", "Medium_TumorModule")
+)
+
+# Count cells in each category
+module_counts <- table(merged_seurat_hmm@meta.data[["TumorModule_Classification"]])
+cat("TumorModule Cell Classification:\n")
+print(module_counts)
+
+# ========================================
+# PART 3: Visualizations
+# ========================================
+
+cat("\n=== Creating TumorModule Visualizations ===\n")
+
+# Run UMAP if not already present
+if (!"umap" %in% names(merged_seurat_hmm@reductions)) {
+  cat("Running UMAP...\n")
+  merged_seurat_hmm <- RunUMAP(merged_seurat_hmm, dims = 1:30, verbose = FALSE)
+}
+
+# 1. UMAP colored by TumorModule combined score
+p1 <- FeaturePlot(
+  merged_seurat_hmm,
+  features = score_name_combined,
+  pt.size = 0.5,
+  cols = c("blue", "lightgray", "red")
+) +
+  ggtitle("TumorModule Combined Score") +
+  theme(plot.title = element_text(size = 14, hjust = 0.5))
+
+# 2. UMAP colored by TumorModule classification
+p2 <- DimPlot(
+  merged_seurat_hmm,
+  group.by = "TumorModule_Classification",
+  pt.size = 0.5,
+  cols = c("High_TumorModule" = "red", "Medium_TumorModule" = "gray", "Low_TumorModule" = "blue")
+) +
+  ggtitle("TumorModule Classification") +
+  theme(plot.title = element_text(size = 14, hjust = 0.5))
+
+# Combine UMAP plots
+combined_umap <- p1 | p2
+print(combined_umap)
+
+# 3. Distribution of TumorModule scores
+p3 <- ggplot(merged_seurat_hmm@meta.data, aes(.data[[score_name_combined]])) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = c(threshold_low, threshold_high), 
+             linetype = "dashed", color = "red", linewidth = 1) +
+  labs(title = "Distribution of TumorModule Combined Scores",
+       x = "TumorModule Score", y = "Number of Cells") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 14, hjust = 0.5))
+
+print(p3)
+
+# 4. Violin plot by clusters (if clusters exist)
+if ("seurat_clusters" %in% colnames(merged_seurat_hmm@meta.data)) {
+  p4 <- VlnPlot(
+    merged_seurat_hmm,
+    features = score_name_combined,
+    group.by = "seurat_clusters",
+    pt.size = 0
+  ) +
+    ggtitle("TumorModule Scores by Cluster") +
+    theme(plot.title = element_text(size = 14, hjust = 0.5))
+  
+  print(p4)
+}
+
+# 5. Compare tumor vs immune component scores
+if ("TumorModule_Tumor_Score" %in% colnames(merged_seurat_hmm@meta.data) && 
+    "TumorModule_Immune_Score" %in% colnames(merged_seurat_hmm@meta.data)) {
+  
+  p5 <- FeaturePlot(
+    merged_seurat_hmm,
+    features = c("TumorModule_Tumor_Score", "TumorModule_Immune_Score"),
+    ncol = 2,
+    pt.size = 0.3
+  )
+  print(p5)
+}
+
+# 6. Heatmap of top TumorModule genes in high-scoring cells
+high_tumor_cells <- colnames(merged_seurat_hmm)[merged_seurat_hmm@meta.data[["TumorModule_Classification"]] == "High_TumorModule"]
+
+if (length(high_tumor_cells) > 100) {
+  high_tumor_cells <- sample(high_tumor_cells, 100)
+}
+
+top_tumor_genes <- head(genes_in_data_tumor, 10)
+top_immune_genes <- head(genes_in_data_immune, 10)
+top_genes <- c(top_tumor_genes, top_immune_genes)
+
+if (length(top_genes) > 0 && length(high_tumor_cells) > 10) {
+  tryCatch({
+    p6 <- DoHeatmap(
+      merged_seurat_hmm,
+      features = top_genes,
+      cells = high_tumor_cells,
+      group.by = "TumorModule_Classification",
+      size = 3
+    ) +
+      ggtitle("Top TumorModule Genes in High-Scoring Cells") +
+      theme(plot.title = element_text(size = 14, hjust = 0.5))
+    
+    print(p6)
+  }, error = function(e) {
+    cat("Could not create heatmap:", e$message, "\n")
+  })
+}
+
+# 7. Feature plots for top tumor-enriched genes
+if (length(top_tumor_genes) > 0) {
+  tryCatch({
+    p7 <- FeaturePlot(
+      merged_seurat_hmm,
+      features = head(top_tumor_genes, 4),
+      ncol = 2,
+      pt.size = 0.3
+    )
+    print(p7)
+  }, error = function(e) {
+    cat("Could not create feature plot for tumor genes:", e$message, "\n")
+  })
+}
+
+# 8. Feature plots for top immune-enriched genes
+if (length(top_immune_genes) > 0) {
+  tryCatch({
+    p8 <- FeaturePlot(
+      merged_seurat_hmm,
+      features = head(top_immune_genes, 4),
+      ncol = 2,
+      pt.size = 0.3
+    )
+    print(p8)
+  }, error = function(e) {
+    cat("Could not create feature plot for immune genes:", e$message, "\n")
+  })
+}
+
+# ========================================
+# PART 4: Analysis by Cell Types (if available)
+# ========================================
+
+# Check for common cell type annotation columns
+possible_celltype_cols <- c("celltype", "cell_type", "CellType", "annotation", "Annotation", "cluster", "refined_celltype")
+celltype_col <- NULL
+
+for (col in possible_celltype_cols) {
+  if (col %in% colnames(merged_seurat_hmm@meta.data)) {
+    celltype_col <- col
+    break
+  }
+}
+
+if (!is.null(celltype_col)) {
+  cat("\n=== TumorModule Analysis by Cell Types ===\n")
+  cat("Using cell type column:", celltype_col, "\n")
+  
+  # Create summary by cell type
+  celltype_summary <- merged_seurat_hmm@meta.data %>%
+    group_by(.data[[celltype_col]]) %>%
+    summarise(
+      n_cells = n(),
+      mean_tumor_score = mean(.data[[score_name_combined]], na.rm = TRUE),
+      median_tumor_score = median(.data[[score_name_combined]], na.rm = TRUE),
+      high_tumor_pct = sum(.data[["TumorModule_Classification"]] == "High_TumorModule") / n() * 100,
+      .groups = 'drop'
+    ) %>%
+    arrange(desc(mean_tumor_score))
+  
+  print(celltype_summary)
+  
+  # Violin plot by cell type
+  p9 <- VlnPlot(
+    merged_seurat_hmm,
+    features = score_name_combined,
+    group.by = celltype_col,
+    pt.size = 0
+  ) +
+    ggtitle("TumorModule Scores by Cell Type") +
+    theme(plot.title = element_text(size = 14, hjust = 0.5),
+          axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(p9)
+  
+  # Box plot showing distribution
+  p10 <- ggplot(merged_seurat_hmm@meta.data, aes(x = .data[[celltype_col]], y = .data[[score_name_combined]])) +
+    geom_boxplot(aes(fill = .data[[celltype_col]]), alpha = 0.7) +
+    geom_hline(yintercept = c(threshold_low, threshold_high), 
+               linetype = "dashed", color = "red") +
+    labs(title = "TumorModule Score Distribution by Cell Type",
+         x = "Cell Type", y = "TumorModule Score") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 14, hjust = 0.5),
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none")
+  
+  print(p10)
+}
+
+# ========================================
+# PART 5: Summary and Export
+# ========================================
+
+# Create comprehensive summary
+cell_summary <- data.frame(
+  Cell_ID = colnames(merged_seurat_hmm),
+  TumorModule_Combined_Score = merged_seurat_hmm@meta.data[[score_name_combined]],
+  TumorModule_Classification = merged_seurat_hmm@meta.data[["TumorModule_Classification"]],
+  stringsAsFactors = FALSE
+)
+
+# Add component scores if available
+if ("TumorModule_Tumor_Score" %in% colnames(merged_seurat_hmm@meta.data)) {
+  cell_summary$TumorModule_Tumor_Score <- merged_seurat_hmm@meta.data[["TumorModule_Tumor_Score"]]
+}
+if ("TumorModule_Immune_Score" %in% colnames(merged_seurat_hmm@meta.data)) {
+  cell_summary$TumorModule_Immune_Score <- merged_seurat_hmm@meta.data[["TumorModule_Immune_Score"]]
+}
+
+# Add manual scores
+cell_summary$TumorModule_Manual_Combined_Score <- merged_seurat_hmm@meta.data[["TumorModule_Manual_Combined_Score"]]
+cell_summary$TumorModule_Manual_Tumor_Score <- merged_seurat_hmm@meta.data[["TumorModule_Manual_Tumor_Score"]]
+cell_summary$TumorModule_Manual_Immune_Score <- merged_seurat_hmm@meta.data[["TumorModule_Manual_Immune_Score"]]
+
+# Add UMAP coordinates if available
+if ("umap" %in% names(merged_seurat_hmm@reductions)) {
+  umap_coords <- Embeddings(merged_seurat_hmm, reduction = "umap")
+  cell_summary$UMAP_1 <- umap_coords[, 1]
+  cell_summary$UMAP_2 <- umap_coords[, 2]
+}
+
+# Add cell type information if available
+if (!is.null(celltype_col)) {
+  cell_summary$Cell_Type <- merged_seurat_hmm@meta.data[[celltype_col]]
+}
+
+# Print final summary
+cat("\n=== FINAL TUMOR MODULE SUMMARY ===\n")
+cat("Total cells analyzed:", nrow(cell_summary), "\n")
+cat("High TumorModule cells:", sum(cell_summary$TumorModule_Classification == "High_TumorModule"), "\n")
+cat("Medium TumorModule cells:", sum(cell_summary$TumorModule_Classification == "Medium_TumorModule"), "\n")
+cat("Low TumorModule cells:", sum(cell_summary$TumorModule_Classification == "Low_TumorModule"), "\n")
+cat("Mean TumorModule score:", round(mean(cell_summary$TumorModule_Combined_Score, na.rm = TRUE), 3), "\n")
+cat("Score range:", round(min(cell_summary$TumorModule_Combined_Score, na.rm = TRUE), 3), "to",
+    round(max(cell_summary$TumorModule_Combined_Score, na.rm = TRUE), 3), "\n")
+
+# Save results
+write.csv(cell_summary, "TumorModule_application_results.csv", row.names = FALSE)
+saveRDS(merged_seurat_hmm, "merged_seurat_with_TumorModule.rds")
+
+cat("\nTumorModule application complete!\n")
+cat("Results saved to:\n")
+cat("- TumorModule_application_results.csv\n")
+cat("- merged_seurat_with_TumorModule.rds\n")
+
+# Display available module columns
+cat("\nTumorModule columns added to metadata:\n")
+tumor_cols <- colnames(merged_seurat_hmm@meta.data)[grep("TumorModule", colnames(merged_seurat_hmm@meta.data))]
+print(tumor_cols)
+```
+# Panel: Q: Tumor Module
+```{r}
+# ========================================
+# PANEL Q: TumorModule UMAP Visualization
+# ========================================
+
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+
+# Create output directory if it doesn't exist
+if (!dir.exists("250725.Fig7Final")) {
+  dir.create("250725.Fig7Final", recursive = TRUE)
+}
+
+# Create a formatted classification column for better legend labels
+merged_seurat_hmm@meta.data$TumorModule_Classification_Formatted <- factor(
+  case_when(
+    merged_seurat_hmm@meta.data$TumorModule_Classification == "High_TumorModule" ~ "High Tumor Module",
+    merged_seurat_hmm@meta.data$TumorModule_Classification == "Medium_TumorModule" ~ "Medium Tumor Module",
+    merged_seurat_hmm@meta.data$TumorModule_Classification == "Low_TumorModule" ~ "Low Tumor Module",
+    TRUE ~ as.character(merged_seurat_hmm@meta.data$TumorModule_Classification)
+  ),
+  levels = c("High Tumor Module", "Medium Tumor Module", "Low Tumor Module")
+)
+
+# 1. UMAP colored by TumorModule combined score
+p1 <- FeaturePlot(
+  merged_seurat_hmm,
+  features = score_name_combined,
+  pt.size = 0.5,
+  cols = c("blue", "lightgray", "red")
+) +
+  ggtitle("TumorModule Combined Score") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    legend.title = element_text(size = 6),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "right"
+  )
+
+# 2. UMAP colored by TumorModule classification
+p2 <- DimPlot(
+  merged_seurat_hmm,
+  group.by = "TumorModule_Classification_Formatted",
+  pt.size = 0.5,
+  cols = c("High Tumor Module" = "red", "Medium Tumor Module" = "gray", "Low Tumor Module" = "blue")
+) +
+  ggtitle("TumorModule Classification") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    legend.title = element_text(size = 6),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "right"
+  )
+
+# Combine UMAP plots
+combined_umap <- p1 | p2
+
+# Display the combined plot
+print(combined_umap)
+
+# Save individual plots
+ggsave(
+  filename = "250725.Fig7Final/250725.PanelQ.TumorModule_Combined_Score.pdf",
+  plot = p1,
+  width = 6,
+  height = 5,
+  units = "in",
+  dpi = 300
+)
+
+ggsave(
+  filename = "250725.Fig7Final/250725.PanelQ.TumorModule_Classification.pdf",
+  plot = p2,
+  width = 6,
+  height = 5,
+  units = "in",
+  dpi = 300
+)
+
+# Save combined plot
+ggsave(
+  filename = "250725.Fig7Final/250725.PanelQ.TumorModule_Combined.pdf",
+  plot = combined_umap,
+  width = 12,
+  height = 10,
+  units = "in",
+  dpi = 300
+)
+
+cat("Panel Q plots saved to 250725.Fig7Final/ directory:\n")
+cat("- 250725.PanelQ.TumorModule_Combined_Score.pdf\n")
+cat("- 250725.PanelQ.TumorModule_Classification.pdf\n")
+cat("- 250725.PanelQ.TumorModule_Combined.pdf\n")
+```
+# Panel R:
+```{r}
+# ========================================
+# TumorModule Classification by Selected Cell Types
+# ========================================
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# Create output directory if it doesn't exist
+if (!dir.exists("250725.Fig7Final")) {
+  dir.create("250725.Fig7Final", recursive = TRUE)
+}
+
+# Define the cell types we want to keep and their display names
+target_celltypes <- c("CAF_Matrix", "Hybrid CHC1", "Hybrid CHC2", "Hybrid CHC3", 
+                     "Endothelial cells", "Epithelial_General", "Hybrid THC")
+
+# Create a mapping for display names (clean up the names)
+celltype_mapping <- c(
+  "CAF_Matrix" = "CAFs",
+  "Hybrid CHC1" = "Hybrid CHC1", 
+  "Hybrid CHC2" = "Hybrid CHC2",
+  "Hybrid CHC3" = "Hybrid CHC3",
+  "Endothelial cells" = "Endothelial Cells",
+  "Epithelial_General" = "Epithelial Cells", 
+  "Hybrid THC" = "Hybrid THC"
+)
+
+# Check if Final_Sophisticated_Annotation column exists
+if (!"Final_Sophisticated_Annotation" %in% colnames(merged_seurat_hmm@meta.data)) {
+  stop("Final_Sophisticated_Annotation column not found in metadata")
+}
+
+# Check which target cell types are actually present
+available_celltypes <- intersect(target_celltypes, unique(merged_seurat_hmm@meta.data$Final_Sophisticated_Annotation))
+missing_celltypes <- setdiff(target_celltypes, available_celltypes)
+
+cat("Available cell types from your list:\n")
+print(available_celltypes)
+if (length(missing_celltypes) > 0) {
+  cat("\nMissing cell types:\n")
+  print(missing_celltypes)
+  cat("\nAll available cell types in Final_Sophisticated_Annotation:\n")
+  print(sort(unique(merged_seurat_hmm@meta.data$Final_Sophisticated_Annotation)))
+}
+
+# Filter cells to only include target cell types
+cells_to_keep <- merged_seurat_hmm@meta.data$Final_Sophisticated_Annotation %in% available_celltypes
+filtered_seurat <- merged_seurat_hmm[, cells_to_keep]
+
+cat("\nFiltered from", ncol(merged_seurat_hmm), "to", ncol(filtered_seurat), "cells\n")
+
+# Create cleaned cell type labels
+filtered_seurat@meta.data$Celltype_Clean <- celltype_mapping[filtered_seurat@meta.data$Final_Sophisticated_Annotation]
+
+# Create the TumorModule classification formatted version if not already present
+if (!"TumorModule_Classification_Formatted" %in% colnames(filtered_seurat@meta.data)) {
+  filtered_seurat@meta.data$TumorModule_Classification_Formatted <- factor(
+    case_when(
+      filtered_seurat@meta.data$TumorModule_Classification == "High_TumorModule" ~ "High Tumor Module",
+      filtered_seurat@meta.data$TumorModule_Classification == "Medium_TumorModule" ~ "Medium Tumor Module",
+      filtered_seurat@meta.data$TumorModule_Classification == "Low_TumorModule" ~ "Low Tumor Module",
+      TRUE ~ as.character(filtered_seurat@meta.data$TumorModule_Classification)
+    ),
+    levels = c("High Tumor Module", "Medium Tumor Module", "Low Tumor Module")
+  )
+}
+
+# Summary statistics
+cat("\n=== TumorModule Distribution by Cell Type ===\n")
+summary_stats <- filtered_seurat@meta.data %>%
+  group_by(Celltype_Clean, TumorModule_Classification_Formatted) %>%
+  summarise(n = n(), .groups = 'drop') %>%
+  group_by(Celltype_Clean) %>%
+  mutate(
+    total = sum(n),
+    percentage = round(n/total * 100, 1)
+  ) %>%
+  ungroup()
+
+print(summary_stats)
+
+# Create stacked bar plot
+p1 <- ggplot(summary_stats, aes(x = Celltype_Clean, y = n, fill = TumorModule_Classification_Formatted)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = c("High Tumor Module" = "red", 
+                               "Medium Tumor Module" = "gray", 
+                               "Low Tumor Module" = "blue")) +
+  labs(title = "TumorModule Classification by Cell Type",
+       x = "Cell Type",
+       y = "Number of Cells",
+       fill = "TumorModule\nClassification") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title = element_text(size = 6),
+    axis.text = element_text(size = 6),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(size = 6),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm")
+  )
+
+# Create percentage stacked bar plot
+p2 <- ggplot(summary_stats, aes(x = Celltype_Clean, y = percentage, fill = TumorModule_Classification_Formatted)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = c("High Tumor Module" = "red", 
+                               "Medium Tumor Module" = "gray", 
+                               "Low Tumor Module" = "blue")) +
+  labs(title = "TumorModule Classification by Cell Type (%)",
+       x = "Cell Type",
+       y = "Percentage of Cells",
+       fill = "TumorModule\nClassification") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    axis.title = element_text(size = 6),
+    axis.text = element_text(size = 6),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(size = 6),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm")
+  )
+
+# Define custom colors for cell types
+celltype_colors <- c(
+  "Hybrid THC" = "red3",
+  "Hybrid CHC1" = rgb(236/255, 164/255, 0/255),
+  "Hybrid CHC2" = rgb(40/255, 0/255, 3/255),
+  "Hybrid CHC3" = rgb(121/255, 30/255, 148/255),
+  "CAFs" = "purple",
+  "Epithelial Cells" = "gray45",
+  "Endothelial Cells" = "hotpink3"
+)
+
+# Create violin plot showing score distributions
+if (exists("score_name_combined") && score_name_combined %in% colnames(filtered_seurat@meta.data)) {
+  p3 <- ggplot(filtered_seurat@meta.data, aes(x = Celltype_Clean, y = .data[[score_name_combined]])) +
+    geom_violin(aes(fill = Celltype_Clean), alpha = 0.7, scale = "width") +
+    geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.7) +
+    scale_fill_manual(values = celltype_colors) +
+    labs(title = "TumorModule Score Distribution by Cell Type",
+         x = "Cell Type",
+         y = "TumorModule Score") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 6, hjust = 0.5),
+      axis.title = element_text(size = 6),
+      axis.text = element_text(size = 6),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    )
+} else {
+  p3 <- ggplot() + 
+    labs(title = "Score data not available") + 
+    theme_void()
+}
+
+# Create UMAP showing only selected cell types
+p4 <- DimPlot(
+  filtered_seurat,
+  group.by = "Celltype_Clean",
+  pt.size = 0.5,
+  cols = celltype_colors
+) +
+  ggtitle("Selected Cell Types") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    legend.title = element_text(size = 6),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm")
+  )
+
+# Create UMAP colored by TumorModule classification for filtered cells
+p5 <- DimPlot(
+  filtered_seurat,
+  group.by = "TumorModule_Classification_Formatted",
+  pt.size = 0.5,
+  cols = c("High Tumor Module" = "red", "Medium Tumor Module" = "gray", "Low Tumor Module" = "blue")
+) +
+  ggtitle("TumorModule Classification (Selected Cells)") +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 6, hjust = 0.5),
+    legend.title = element_text(size = 6),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm")
+  )
+
+# Display plots
+print(p1)
+print(p2) 
+print(p3)
+print(p4 | p5)
+
+# Save plots
+ggsave(
+  filename = "250725.Fig7Final/250725.TumorModule_by_CellType_Counts.pdf",
+  plot = p1,
+  width = 6,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+ggsave(
+  filename = "250725.Fig7Final/250725.TumorModule_by_CellType_Percentages.pdf",
+  plot = p2,
+  width = 6,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+ggsave(
+  filename = "250725.Fig7Final/250725.TumorModule_Score_Distribution_by_CellType.pdf",
+  plot = p3,
+  width = 6,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+ggsave(
+  filename = "250725.Fig7Final/250725.TumorModule_Selected_CellTypes_UMAP.pdf",
+  plot = p4 | p5,
+  width = 8,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+# Save summary table
+write.csv(summary_stats, "250725.Fig7Final/250725.TumorModule_by_CellType_Summary.csv", row.names = FALSE)
+
+cat("\nPlots and summary saved to 250725.Fig7Final/ directory:\n")
+cat("- 250725.TumorModule_by_CellType_Counts.pdf\n")
+cat("- 250725.TumorModule_by_CellType_Percentages.pdf\n") 
+cat("- 250725.TumorModule_Score_Distribution_by_CellType.pdf\n")
+cat("- 250725.TumorModule_Selected_CellTypes_UMAP.pdf\n")
+cat("- 250725.TumorModule_by_CellType_Summary.csv\n")
+```
