@@ -3,11 +3,11 @@
 module load cellranger\ 
 ````
 Hit tab to continue
-# Confirm that module is operational
+## Confirm that module is operational
 ```
 module avail
 ```
-# Confirm module is running correctly w/ dependencies
+## Confirm module is running correctly w/ dependencies
 ```
 cellranger [hit enter]
 ```
