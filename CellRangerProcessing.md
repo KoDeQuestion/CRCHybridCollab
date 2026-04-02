@@ -91,11 +91,6 @@ scp queitsch@ajani:/home/groups/ravnica/projects/hybrid/241004_10xscRNA/HF03/out
 scp queitsch@ajani:/home/groups/ravnica/projects/hybrid/241004_10xscRNA/HF03/outs/raw_feature_bc_matrix/features.tsv.gz /Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/240918_10xscRNA_HF/HF03_raw/
 
 scp queitsch@ajani:/home/groups/ravnica/projects/hybrid/241004_10xscRNA/HF03/outs/raw_feature_bc_matrix/barcodes.tsv.gz /Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/240918_10xscRNA_HF/HF03_raw/
-```
-
-
-____________
-
-
 
 scp queitsch@ajani:/home/groups/ravnica/projects/hybrid/241004_10xscRNA/241004_10xscRNA_HF/outs/fastq_path/Reports/html/index.html /Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/240918_10xscRNA_HF/
+```
