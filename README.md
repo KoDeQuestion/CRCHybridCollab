@@ -1,6 +1,3 @@
-KQ and AA's Repo for Hybrid Fusion Project in 2025
-
-
 This repo contains files for:
 * scRNA-seq Analysis of in vivo (mouse) generated hybrid fusion cells
 * scATAC-seq Analysis of in vivo (mouse) generated hybrid fusion cells
