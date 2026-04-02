@@ -1,7 +1,10 @@
 KQ and AA's Repo for Hybrid Fusion Project in 2025
 
 
-@AA I was forced to make an empty directory when creating the new repository.
-I've saved copies of my R Markdowns, but they don't reflect my local current working directory.
-All the supporting files (matrices, annotation files, etc.) will have to be copied over once these are finalized.
-No longer current there as of 25.04.25!
+This repo contains files for:
+* scRNA-seq Analysis of in vivo (mouse) generated hybrid fusion cells
+* scATAC-seq Analysis of in vivo (mouse) generated hybrid fusion cells
+* scRNA-seq Analysis of artificial doublet experiment
+* scRNA-seq Analysis of patient-isolated hybrid fusion cells (SmartSeq)
+* scRNA-seq Analysis of patient-isolated hybrid fusion cells (10xGenomics)
+As well as copy number estimation, tumor module generation, etc.
