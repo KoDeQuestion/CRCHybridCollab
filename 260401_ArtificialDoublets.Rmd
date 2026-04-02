@@ -1,0 +1,477 @@
+---
+title: "20240319_artificialdoublets2"
+author: "Ashley Anderson, Konstantin Queitsch"
+date: "2025-04-25"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# remotes::install_github('chris-mcginnis-ucsf/DoubletFinder')
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("scDblFinder")
+# 
+# install.packages("reticulate")
+# install.packages("ggExtra")
+```
+
+## Start Up
+
+# Loading Required Packages
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+```
+#Setting a Seeds
+```{r}
+set.seed(34)
+```
+# Install uncommon package
+```{r}
+# install presto for faster implementation of wilcoxon rank sum test 
+#install.packages('devtools')
+#devtools::install_github('immunogenomics/presto')
+```
+
+## Artificial Doublet Analysis
+
+# Read in counts matrix & barcode file with cellidentity, make seurat object with cell identity 
+```{r}
+counts <- read.delim(file="/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/ArtDup Experiment/231201_ArtificialDoublets.bbrd.q10.filt.srt.counts.tsv")
+
+barcode_annotation <- read.table("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/ArtDup Experiment/240319_BarcodesAnnotated.txt", header = TRUE, stringsAsFactors = FALSE)
+
+
+doublets2 <- CreateSeuratObject(counts = counts, project = "artificial doublets2", min.features = 500)
+
+
+row.names(barcode_annotation) <- barcode_annotation$Cells
+
+#head(Cells(doublets2))
+#head(barcode_annotation$Cells)
+#colnames(barcode_annotation)
+colnames(barcode_annotation) <- c("Cells", "CellIdentity")
+
+row.names(barcode_annotation) <- barcode_annotation$Cells
+doublets2_meta <- AddMetaData(object = doublets2, metadata = barcode_annotation)
+
+View(doublets2_meta)
+
+
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+doublets2_meta[["percent.mt"]] <- PercentageFeatureSet(doublets2, pattern = "^mt-")
+
+# Visualize QC metrics as a violin plot
+VlnPlot(doublets2_meta, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+
+#subset based on data quality to remove cells with high MT DNA and low nFeature RNA
+```{r}
+doublets2_meta <- subset(doublets2_meta, subset = nFeature_RNA > 1000 & percent.mt < 15)
+```
+
+#Normalizing Data. employ a global-scaling normalization method “LogNormalize” that normalizes the feature expression measurements for each cell by the total expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result.
+```{r}
+doublets2_meta <- NormalizeData(doublets2_meta, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+
+#finding highly variable features 
+```{r}
+doublets2_meta <- FindVariableFeatures(doublets2_meta, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(doublets2_meta), 10)
+top10
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(doublets2_meta)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 
+plot2
+```
+
+#scaling the data 
+```{r}
+all.genes <- rownames(doublets2_meta)
+doublets2_meta <- ScaleData(doublets2_meta, features = all.genes)
+```
+
+#perform linear dimensionality reduction
+```{r}
+doublets2_meta <- RunPCA(doublets2_meta, features = VariableFeatures(object = doublets2_meta))
+
+# Examine and visualize PCA results a few different ways
+print(doublets2_meta[["pca"]], dims = 1:5, nfeatures = 5)
+
+VizDimLoadings(doublets2_meta, dims = 1:5, reduction = "pca")
+VizDimLoadings(doublets2_meta, dims = 1:2, reduction = "pca")
+VizDimLoadings(doublets2_meta, dims = 3:4, reduction = "pca")
+VizDimLoadings(doublets2_meta, dims = 4:5, reduction = "pca")
+
+DimPlot(doublets2_meta, reduction = "pca")
+DimHeatmap(doublets2_meta, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(doublets2_meta, dims = 1:5, cells = 500, balanced = TRUE)
+```
+
+#determine dimensionality of the dataset 
+```{r}
+ElbowPlot(doublets2_meta)
+```
+
+#cluster the cells
+```{r}
+doublets2_meta <- FindNeighbors(doublets2_meta, dims = 1:10)
+doublets2_meta <- FindClusters(doublets2_meta, dims = 1:10, resolution = 0.5)
+head(Idents(doublets2_meta), 5)
+```
+
+#run linear dimensionality reduction UMAP
+```{r}
+doublets2_meta <- RunUMAP(doublets2_meta, dims = 1:10)
+DimPlot(doublets2_meta, reduction = "umap")
+
+DimPlot(doublets2_meta, group.by = 'CellIdentity')
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("red", "gray","gray", "blue","gray","gray", "gray", "gray"))
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("gray", "green","gray", "gray","gray","gray", "gray", "pink"))
+
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("gray", "red","gray", "gray","gray","gray", "gray", "gray"))
+
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("gray", "gray","red", "gray","gray","gray", "gray", "gray"))
+
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "red","gray","gray", "gray", "gray"))
+
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "gray","red","gray", "gray", "gray"))
+
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "gray","gray","red", "gray", "gray"))
+
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "gray","gray","gray", "red", "gray"))
+
+DimPlot(doublets2_meta, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "gray","gray","gray", "gray", "red"))
+
+
+
+FeaturePlot(doublets2_meta, features = c("Spp1", "Cxcl9", "Il1a"))
+
+
+```
+
+# Subset data to remove the "Remove" cells
+```{r}
+#cells-to-include <- doublets2_meta$orig.ident = c("HF", "Mac", "Tum", "Mac-Tum")
+cells_to_include <- c("HF", "Mac", "Tum", "Mac-Tum")
+doublets2_subset <- subset(doublets2_meta, subset = CellIdentity %in% cells_to_include)
+
+```
+# Run UMAP on Subsetted Data
+```{r}
+doublets2_subset <- RunUMAP(doublets2_subset, dims = 1:10)
+DimPlot(doublets2_subset, reduction = "umap")
+
+DimPlot(doublets2_subset, group.by = 'CellIdentity', pt.size = 2)
+DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("red", "gray","blue", "grey"), pt.size = 2) 
+DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("grey", "green","blue", "grey"), pt.size = 2) 
+#DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("gray", "green","gray", "gray","gray","gray", "gray", "pink"))
+# 
+# DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("gray", "red","gray", "gray","gray","gray", "gray", "gray"))
+# 
+# DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("gray", "gray","red", "gray","gray","gray", "gray", "gray"))
+# 
+# DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "red","gray","gray", "gray", "gray"))
+# 
+# DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "gray","red","gray", "gray", "gray"))
+# 
+# DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "gray","gray","red", "gray", "gray"))
+# 
+# DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "gray","gray","gray", "red", "gray"))
+# 
+# DimPlot(doublets2_subset, group.by = 'CellIdentity', cols = c("gray", "gray","gray", "gray","gray","gray", "gray", "red"))
+# 
+# 
+# 
+#FeaturePlot(doublets2_subset, features = c("Spp1", "Cxcl9", "Il1a", "Runx1")) #AA
+FeaturePlot(doublets2_subset, features = c("Epcam", "Spi1", "Runx1", "Cldn1")) #Hybrids
+FeaturePlot(doublets2_subset, features = c("Epcam", "Cldn1", "Satb2")) #MC38?
+FeaturePlot(doublets2_subset, features = c("Cd14", "Ccr5", "Adgre1")) #Macrophage Cluster
+#Adgre1 codes for F4/80 receptor which is highly and constitutevly expressed on resident tissue macrophage
+#Was previously used in the 2011 Wong Paper.
+
+```
+
+```{r}
+library(ggplot2)
+library(patchwork)
+
+# Create the FeaturePlots
+plot1 <- FeaturePlot(doublets2_subset, features = "Epcam")
+plot2 <- FeaturePlot(doublets2_subset, features = "Cldn1")
+plot3 <- FeaturePlot(doublets2_subset, features = "Satb2")
+
+# Add a centered title
+combined_plot <- plot1 + plot2 + plot3 + plot_annotation(title = "MC38 Canonical Genes")
+combined_plot
+
+
+```
+
+#finding differentially expressed features 
+```{r}
+
+doublets2_meta <- JoinLayers(doublets2_meta)
+
+# find all markers for each individual cluster 0-5
+cluster0.markers <- FindMarkers(doublets2_meta, ident.1 = 0, min.pct = 0.25)
+head(cluster0.markers, n = 20)
+write.csv(cluster0.markers, file = "doublets2_meta_cluster0_markers")
+View(cluster0.markers)
+
+cluster1.markers <- FindMarkers(doublets2_meta, ident.1 = 1, min.pct = 0.25)
+write.csv(cluster1.markers, file = "doublets2_meta_cluster1_markers")
+head(cluster1.markers, n = 20)
+
+
+cluster2.markers <- FindMarkers(doublets2_meta, ident.1 = 2, min.pct = 0.25)
+write.csv(cluster2.markers, file = "doublets2_meta_cluster2_markers")
+head(cluster2.markers, n = 20)
+
+
+cluster3.markers <- FindMarkers(doublets2_meta, ident.1 = 3, min.pct = 0.25)
+write.csv(cluster3.markers, file = "doublets2_meta_cluster3_markers")
+head(cluster3.markers, n = 20)
+
+
+cluster4.markers <- FindMarkers(doublets2_meta, ident.1 = 4, min.pct = 0.25)
+write.csv(cluster4.markers, file = "doublets2_meta_cluster4_markers")
+head(cluster4.markers, n = 20)
+
+
+cluster5.markers <- FindMarkers(doublets2_meta, ident.1 = 5, min.pct = 0.25)
+write.csv(cluster5.markers, file = "doublets2_meta_cluster5_markers")
+head(cluster5.markers, n = 20)
+
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+doublets2_meta.markers <- FindAllMarkers(doublets2_meta, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+doublets2_meta.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+write.csv(doublets2_meta.markers, file = "doublets2_meta_pos_markers")
+
+doublets2_meta.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(doublets2_meta, features = top10$gene) + NoLegend()
+
+
+```
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("org.Mm.eg.db") #org.Mm.eg.db for mouse
+
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("clusterProfiler")
+
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("AnnotationDbi")
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("tidyverse")
+
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("RColorBrewer")
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("fgsea")
+```
+
+```{r}
+library(AnnotationDbi)
+#library(tidyverse)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(fgsea)
+library(RColorBrewer)
+```
+
+##GSEA analysis hybrid cluster 1 and 4
+```{r}
+
+##cluster1
+
+cluster1.markers$gene <- rownames(cluster1.markers)
+cluster1.markers <- cluster1.markers %>% arrange(desc(avg_log2FC))
+cluster1_foldchange <- cluster1.markers$avg_log2FC
+names(cluster1_foldchange) <- cluster1.markers$gene
+
+head(cluster1_foldchange)
+
+cluster1_foldchange.df <- as.data.frame(cluster1_foldchange)
+
+cluster1_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster1_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster1_enslist <- na.omit(cluster1_foldchange.df)
+
+cluster1_enslist <- cluster1_foldchange.df$cluster1_foldchange
+names(cluster1_enslist) <- cluster1_foldchange.df$ENSEMBL
+cluster1_enslist
+
+View(cluster1_enslist)
+
+gse.cluster1 <- gseGO(cluster1_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster1.df <- as.data.frame(gse.cluster1)
+
+write.csv(gse.cluster1.df, file = "doublets2_meta.gse.cluster1.csv")
+
+
+##visualization
+require(DOSE)
+dotplot(gse.cluster1, showCategory=10, split=".sign", font.size = 18) + facet_grid(.~.sign)
+
+
+gse.cluster1.2 <- pairwise_termsim(gse.cluster1) # calculate pairwise similarities of the enriched terms using Jaccard’s similarity index
+
+treeplot(gse.cluster1.2)
+
+emapplot(gse.cluster1.2)
+
+
+##cluster4
+
+cluster4.markers$gene <- rownames(cluster4.markers)
+cluster4.markers <- cluster4.markers %>% arrange(desc(avg_log2FC))
+cluster4_foldchange <- cluster4.markers$avg_log2FC
+names(cluster4_foldchange) <- cluster4.markers$gene
+
+head(cluster4_foldchange)
+
+cluster4_foldchange.df <- as.data.frame(cluster4_foldchange)
+
+cluster4_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster4_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster4_enslist <- na.omit(cluster4_foldchange.df)
+
+cluster4_enslist <- cluster4_foldchange.df$cluster4_foldchange
+names(cluster4_enslist) <- cluster4_foldchange.df$ENSEMBL
+cluster4_enslist
+
+View(cluster4_enslist)
+
+gse.cluster4 <- gseGO(cluster4_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster4.df <- as.data.frame(gse.cluster4)
+
+write.csv(gse.cluster4.df, file = "doublets2_meta.gse.cluster4.csv")
+
+
+##visualization
+require(DOSE)
+dotplot(gse.cluster4, showCategory=10, split=".sign", font.size = 18) + facet_grid(.~.sign)
+
+
+gse.cluster4.2 <- pairwise_termsim(gse.cluster4) # calculate pairwise similarities of the enriched terms using Jaccard’s similarity index
+
+treeplot(gse.cluster4.2)
+
+emapplot(gse.cluster4.2)
+
+```
+
+#DEG hybrid clusters 1 and 4
+```{r}
+
+library(ggplot2)
+library(ggrepel)
+
+##hybrid cluster1
+
+View(cluster1.markers)
+
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2fc respectively positive or negative)
+cluster1.markers$diffexpressed <- "NO"
+cluster1.markers$diffexpressed[cluster1.markers$avg_log2FC > 2 & cluster1.markers$p_val_adj < 0.05] <- "UP"
+cluster1.markers$diffexpressed[cluster1.markers$avg_log2FC < -2 & cluster1.markers$p_val_adj < 0.05] <- "DOWN"
+
+
+View(cluster1.markers)
+
+# Create a new column "delabel" to de, that will contain the name of the top 30 differentially expressed genes (NA in case they are not)
+cluster1.markers$delabel <- ifelse(cluster1.markers$gene %in% head(cluster1.markers[order(cluster1.markers$p_val_adj), "gene"], 30), cluster1.markers$gene, NA)
+
+View(cluster1.markers)
+
+cluster1_volcano <- ggplot(data = cluster1.markers, aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) +
+  geom_vline(xintercept = c(-2, 2), col = "gray", linetype = 'dashed') +
+  geom_hline(yintercept = 75, col = "gray", linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#00AFBB", "grey", "#bb0c00"), labels = c("Downregulated", "Not significant", "Upregulated")) +
+  coord_cartesian(ylim = c(0, 150), xlim = c(-8, 8)) + # since some genes can have minuslog10padj of inf, we set these limits
+  labs(color = 'Gene Expression', #legend_title,
+       x = expression("log"[2]*"FC"), y = expression("-log"[10]*"p-value")) +
+  scale_x_continuous(breaks = seq(-10, 10, 2)) + # to customise the breaks in the x axis
+  ggtitle('Hybrid Clone4 Cluster1 DEGs ') + 
+  geom_text_repel(max.overlaps = Inf)
+ 
+
+cluster1_volcano
+
+
+##hybrid cluster4
+
+View(cluster4.markers)
+
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2fc respectively positive or negative)
+cluster4.markers$diffexpressed <- "NO"
+cluster4.markers$diffexpressed[cluster4.markers$avg_log2FC > 1 & cluster4.markers$p_val_adj < 0.05] <- "UP"
+cluster4.markers$diffexpressed[cluster4.markers$avg_log2FC < -1 & cluster4.markers$p_val_adj < 0.05] <- "DOWN"
+
+
+View(cluster4.markers)
+
+# Create a new column "delabel" to de, that will contain the name of the top 30 differentially expressed genes (NA in case they are not)
+cluster4.markers$delabel <- ifelse(cluster4.markers$gene %in% head(cluster4.markers[order(cluster4.markers$p_val_adj), "gene"], 30), cluster4.markers$gene, NA)
+
+View(cluster4.markers)
+
+cluster4_volcano <- ggplot(data = cluster4.markers, aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) +
+  geom_vline(xintercept = c(-2, 2), col = "gray", linetype = 'dashed') +
+  geom_hline(yintercept = 25, col = "gray", linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#00AFBB", "grey", "#bb0c00"), labels = c("Downregulated", "Not significant", "Upregulated")) +
+  coord_cartesian(ylim = c(0, 80), xlim = c(-8, 6)) + # since some genes can have minuslog10padj of inf, we set these limits
+  labs(color = 'Gene Expression', #legend_title,
+       x = expression("log"[2]*"FC"), y = expression("-log"[10]*"p-value")) +
+  scale_x_continuous(breaks = seq(-10, 10, 2)) + # to customize the breaks in the x axis
+  ggtitle('Hybrid Clone4 cluster4 DEGs ') + 
+  geom_text_repel(max.overlaps = Inf)
+ 
+
+cluster4_volcano
+```
