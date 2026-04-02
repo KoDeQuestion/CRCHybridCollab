@@ -14,6 +14,7 @@ cellranger [hit enter]
 
 # Cell-Type & Indices
 
+Cells Included:
 * 1: MC38 RFP tumor parent passage 8
 * 2: Macrophages (Y01 actin-GFP, 2 male mice DOB 7/2024) day 8 mCSF 25ng/ml treatment
 * 3: MC38xY01 freshly fused hybrids (from tumor/mac parent lines above, day 4 co-culture)
@@ -34,23 +35,27 @@ Barcodes:
 * SI-TT-D8    CGCTGAAATC  AGGTGTCTGC  GCAGACACCT
 * SI-TT-D9    TGGTCCCAAG  CCTCTGGCGT  ACGCCAGAGG
 
-The Raw Files: /home/groups/ravnica/seq/obnix/241004_VH00711_165_2225LHHNX/Data/Intensities/BaseCalls/
+The Raw Files Path: /home/groups/ravnica/seq/obnix/241004_VH00711_165_2225LHHNX/Data/Intensities/BaseCalls/
 
+## Loading Additional Required Module
+```
 module load bcl2fastq2\
 module avail
-
+```
+## Running CellRanger (Example)
+```
 cellranger mkfastq --id=241004_10xscRNA_HF \
             --run=/home/groups/ravnica/seq/obnix/241004_VH00711_165_2225LHHNX/ \
             --samplesheet=/home/groups/ravnica/projects/hybrid/241004_10xscRNA/sample_sheet.csv \
             --localcores=20 \
             --localmem=200 \ &
+```
 
-
-This is where the fastq files are:
-/home/groups/ravnica/projects/hybrid/241004_10xscRNA/241004_10xscRNA_HF/outs/fastq_path/2225LHHNX/
+This is where the fastq files are output:
+```/home/groups/ravnica/projects/hybrid/241004_10xscRNA/241004_10xscRNA_HF/outs/fastq_path/2225LHHNX/```
 
 Example that worked last time:
-
+```
 cellranger count --id=HF03 \
                    --transcriptome=/home/groups/ravnica/src/cellranger/cellranger-7.1.0-kq/refdata-gex-mm10-2020-A/ \
                    --fastqs=/home/groups/ravnica/projects/hybrid/241004_10xscRNA/241004_10xscRNA_HF/outs/fastq_path/2225LHHNX/ \
@@ -74,23 +79,19 @@ cellranger count --id=HFP --transcriptome=/home/groups/ravnica/src/cellranger/ce
 
 cellranger count --id=HF11 --transcriptome=/home/groups/ravnica/src/cellranger/cellranger-7.1.0-kq/refdata-gex-mm10-2020-A/ --fastqs=/home/groups/ravnica/projects/hybrid/241004_10xscRNA/241004_10xscRNA_HF/outs/fastq_path/2225LHHNX/ --sample=HF11 --expect-cells=8000 --localcores=20 --localmem=200 &
 
----
-
 cellranger count --id=Macrophage --transcriptome=/home/groups/ravnica/src/cellranger/cellranger-7.1.0-kq/refdata-gex-mm10-2020-A/ --fastqs=/home/groups/ravnica/projects/hybrid/241004_10xscRNA/241004_10xscRNA_HF/outs/fastq_path/2225LHHNX/ --sample=Macrophage --expect-cells=8000 --localcores=20 --localmem=200 &
 
 cellranger count --id=MC38 --transcriptome=/home/groups/ravnica/src/cellranger/cellranger-7.1.0-kq/refdata-gex-mm10-2020-A/ --fastqs=/home/groups/ravnica/projects/hybrid/241004_10xscRNA/241004_10xscRNA_HF/outs/fastq_path/2225LHHNX/ --sample=MC38 --expect-cells=8000 --localcores=20 --localmem=200 &
+```
+## Copy Files to Local Directory
 
-
-____ 
-
-
-
+```
 scp queitsch@ajani:/home/groups/ravnica/projects/hybrid/241004_10xscRNA/HF03/outs/raw_feature_bc_matrix/matrix.mtx.gz /Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/240918_10xscRNA_HF/HF03_raw/
 
 scp queitsch@ajani:/home/groups/ravnica/projects/hybrid/241004_10xscRNA/HF03/outs/raw_feature_bc_matrix/features.tsv.gz /Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/240918_10xscRNA_HF/HF03_raw/
 
 scp queitsch@ajani:/home/groups/ravnica/projects/hybrid/241004_10xscRNA/HF03/outs/raw_feature_bc_matrix/barcodes.tsv.gz /Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/240918_10xscRNA_HF/HF03_raw/
-
+```
 
 
 ____________
