@@ -1,9 +1,17 @@
+# Load CellRanger Module
+```
 module load cellranger\ 
-#hit tab
+````
+Hit tab to continue
+# Confirm that module is operational
+```
 module avail
-#confirm that module is operational
+```
+# Confirm module is running correctly w/ dependencies
+```
 cellranger [hit enter]
-#confirm module is running correctly w/ dependencies
+```
+
 
 
 1: MC38 RFP tumor parent passage 8
