@@ -14,25 +14,25 @@ cellranger [hit enter]
 
 # Cell-Type & Indices
 
-1: MC38 RFP tumor parent passage 8
-2: Macrophages (Y01 actin-GFP, 2 male mice DOB 7/2024) day 8 mCSF 25ng/ml treatment
-3: MC38xY01 freshly fused hybrids (from tumor/mac parent lines above, day 4 co-culture)
-4: MC38xY01 mature hybrids passage 6 post purity sort (from 7-1-22 exp, previously sequenced)
-5: MC38xY01 hybrid clone 11 passage 9 (from MC38xY01 purity sort population sample 4 above)
-6: MC38xY01 hybrid clone 7 passage 7 (from MC38xY01 purity sort population sample 4 above)
-7: MC38xY01 hybrid clone 4 passage 9 (from MC38xY01 purity sort population sample 4 above)
-8: MC38xY01 hybrid clone 3 passage 6 (from MC38xY01 purity sort population sample 4 above)
+* 1: MC38 RFP tumor parent passage 8
+* 2: Macrophages (Y01 actin-GFP, 2 male mice DOB 7/2024) day 8 mCSF 25ng/ml treatment
+* 3: MC38xY01 freshly fused hybrids (from tumor/mac parent lines above, day 4 co-culture)
+* 4: MC38xY01 mature hybrids passage 6 post purity sort (from 7-1-22 exp, previously sequenced)
+* 5: MC38xY01 hybrid clone 11 passage 9 (from MC38xY01 purity sort population sample 4 above)
+* 6: MC38xY01 hybrid clone 7 passage 7 (from MC38xY01 purity sort population sample 4 above)
+* 7: MC38xY01 hybrid clone 4 passage 9 (from MC38xY01 purity sort population sample 4 above)
+* 8: MC38xY01 hybrid clone 3 passage 6 (from MC38xY01 purity sort population sample 4 above)
 
 
 Barcodes:
-SI-TT-D2    TTAATACGCG  CACCTCGGGT  ACCCGAGGTG
-SI-TT-D3    CCTTCTAGAG  AATACAACGA  TCGTTGTATT
-SI-TT-D4    GCAGTATAGG  TTCCGTGCAC  GTGCACGGAA
-SI-TT-D5    TGGTTCGGGT  GTGGCAGGAG  CTCCTGCCAC
-SI-TT-D6    CCCAGCTTCT  GACACCAAAC  GTTTGGTGTC
-SI-TT-D7    CCTGTCAGGG  AGCCCGTAAC  GTTACGGGCT
-SI-TT-D8    CGCTGAAATC  AGGTGTCTGC  GCAGACACCT
-SI-TT-D9    TGGTCCCAAG  CCTCTGGCGT  ACGCCAGAGG
+* SI-TT-D2    TTAATACGCG  CACCTCGGGT  ACCCGAGGTG
+* SI-TT-D3    CCTTCTAGAG  AATACAACGA  TCGTTGTATT
+* SI-TT-D4    GCAGTATAGG  TTCCGTGCAC  GTGCACGGAA
+* SI-TT-D5    TGGTTCGGGT  GTGGCAGGAG  CTCCTGCCAC
+* SI-TT-D6    CCCAGCTTCT  GACACCAAAC  GTTTGGTGTC
+* SI-TT-D7    CCTGTCAGGG  AGCCCGTAAC  GTTACGGGCT
+* SI-TT-D8    CGCTGAAATC  AGGTGTCTGC  GCAGACACCT
+* SI-TT-D9    TGGTCCCAAG  CCTCTGGCGT  ACGCCAGAGG
 
 The Raw Files: /home/groups/ravnica/seq/obnix/241004_VH00711_165_2225LHHNX/Data/Intensities/BaseCalls/
 
