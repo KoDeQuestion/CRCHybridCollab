@@ -1,0 +1,3264 @@
+---
+title: "ArchRInstall&Attempt1"
+author: "KQ"
+date: "2024-04-04"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Install Packages and Dependencies
+```{r}
+#if (!requireNamespace("devtools", quietly = TRUE)) install.packages("devtools")
+```
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+
+#BiocManager::install("chromVAR")
+
+```
+```{r}
+#devtools::install_github("GreenleafLab/ArchR", ref="master", repos = BiocManager::repositories())
+```
+```{r}
+# install.packages("Matrix")
+# Specify the version you want
+#version <- "1.6-3" #THIS DID NOT WORK, niether did 1.6-1, 1.6-2
+# Install that version from CRAN
+#devtools::install_version("Matrix", version = version)
+```
+```{r}
+#IRLBA MUST BE INSTALLED AFTER MATRIX 
+# 
+# remove.packages("Matrix")
+# remove.packages("irlba")
+```
+```{r} 
+# #https://github.com/cole-trapnell-lab/monocle3/issues/690
+# install.packages("Matrix",type="source", dependencies=T)
+# ```
+# ```{r}
+# install.packages("irlba",type="source", dependencies=T)
+```
+```{r}
+# Get a data frame of installed packages
+#installed_packages <- as.data.frame(installed.packages()[, c("Package", "Version")])
+
+# Print the data frame
+#print(installed_packages, row.names = FALSE)
+```
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("Rsamtools")
+```
+
+##Creating the ArchR Project
+#Launch ArchR
+```{r}
+library(ArchR)
+#ArchR::installExtraPackages()
+library(Rsamtools)
+library(irlba)
+library(dplyr)
+library(stringr)
+
+library(pheatmap)
+library(ggplot2)
+library(hexbin)
+library(magick)
+library(grid)
+library(ggseqlogo)
+
+library(ggimage)
+library(TFBSTools)
+library(grid)
+```
+
+```{r}
+set.seed(1)
+```
+
+#Read Reference Genome
+```{r}
+addArchRGenome("mm10")
+```
+#Input Files
+```{r}
+
+setwd("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/ATAC_Data/ArchRInputData")
+
+```
+
+```{r}
+# List of BAM files
+bamfiles <- c("221025_iCell8_ATAC.bbrd.q10.filt.bam")
+```
+
+```{r}
+# Prepend the directory path to each file name
+#baminput <- paste0(getwd(), "/", bamfiles)
+```
+
+```{r}
+PathToSampleNames <- "/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/ATAC_Data/ArchRInputData/240715_iCell8_ATAC.bbrd.q10.filt.samplelist.dummy.txt"
+
+sampleNamesInput <- readLines(PathToSampleNames)
+```
+
+```{r}
+# # Set the path to your .list file
+# listFilePath <- "./221025_iCell8_ATAC.bbrd.q10.filt.cellIDslist.txt"
+# # Read the file into R and convert it to a character vector
+# validBarcodes <- readLines(listFilePath)
+```
+#Test size and structure of input
+```{r}
+# class(baminput)
+# system(paste("wc -l ", baminput, sep = ""))
+# 
+# print(sampleNamesInput)
+```
+#Create ArrowFile
+```{r}
+ArrowFiles805 <- createArrowFiles(
+  inputFiles = bamfiles,
+  sampleNames = sampleNamesInput,
+  gsubExpression=":.*",
+  #validBarcodes = validBarcodes,
+  minTSS = 4, #Dont set this too high because you can always increase later
+  minFrags = 1000,
+  addTileMat = TRUE,
+  addGeneScoreMat = TRUE,
+  #bcTag = "CB", # This is the tag that contains the cell-specific barcode information in your BAM file
+  #bamFlag = list(isMinusStrand = FALSE, isProperPair = TRUE, isDuplicate = FALSE)
+)
+```
+#Check it's a character vector
+```{r}
+class(ArrowFiles805)
+file.exists(ArrowFiles805)
+```
+#Creating ArchRProject
+```{r}
+projHybrid805 <- ArchRProject(
+  ArrowFiles = ArrowFiles805, 
+  outputDirectory = "projHybrid805",
+  copyArrows = TRUE #This is recommened so that if you modify the Arrow files you have an original copy for later usage.
+)
+```
+#Save ArchRProject
+```{r}
+saveArchRProject(ArchRProj = projHybrid805, outputDirectory = "Save-projHybrid805", load = FALSE)
+```
+
+##Load ArchRProject
+
+```{r}
+#Shortern
+proj <- projHybrid805
+```
+
+```{r}
+# Load your custom annotation data
+customAnnotations <- read.table("/Users/queitsch/Documents/AdeyLab/1_Hybrid_Fusion/ATAC_Data/ArchRInputData/240418_KQ_bysample.annot.csv", header = FALSE, sep = "\t")
+
+```
+
+```{r}
+# Get cellColData
+cellColData <- getCellColData(proj)
+```
+```{r}
+# Get cell IDs from cellColData
+cellColDataIDs <- rownames(cellColData)
+```
+
+```{r}
+barcodes <- sapply(strsplit(rownames(cellColData), "#"), "[", 2)
+```
+
+```{r}
+barcodes_df <- data.frame(barcodes = barcodes)
+```
+
+```{r}
+merged_df <- merge(barcodes_df, customAnnotations, by.x = "barcodes", by.y = "V1")
+```
+
+#Adding the barcodes column to the cellColData
+```{r}
+# Using the $ operator
+cellColData$barcodes <- barcodes
+```
+
+#Sanity Check - the first five barcodes match those from the row names!
+```{r}
+# Get the first five rows of cellColData
+first_five_rows <- head(cellColData, 5)
+
+# Get the row names
+rownames_first_five <- rownames(first_five_rows)
+
+# Get the barcodes (assuming 'barcodes' is the column name for barcodes)
+barcodes_first_five <- first_five_rows$barcodes
+
+# Print the row names and barcodes
+print(rownames_first_five)
+print(barcodes_first_five)
+
+```
+
+```{r}
+# Assuming 'barcodes' is the name of the column in both dataframes
+final_df <- merge(cellColData, merged_df[, c("barcodes", "V2")], by = "barcodes", all.x = TRUE)
+```
+
+```{r}
+# Assuming merged_df is your dataframe
+# Rename "V2" to "Cell Type"
+#matchmerged_df <- rename(merged_df, `Cell Type` = V2)
+
+
+# Rename "V2" to "Cell Type"
+matchmerged_df <- merged_df %>% rename_with(~ "Cell Type", V2)
+colnames(merged_df)
+
+
+# Assuming 'df' is your data frame and 'barcodes' is the column with the barcodes
+matchmerged_df$row_names <- paste("HybridATACExperiment#", matchmerged_df$barcodes, sep="")
+
+# If you want to set these as actual row names in the dataframe
+rownames(matchmerged_df) <- matchmerged_df$row_names
+
+```
+
+```{r}
+# Assuming 'matchedmerged_df' is your dataframe with new columns and 'proj' is your ArchR project
+# Make sure the rownames of df match the cell names in the ArchR project
+
+# Convert dataframe to named a character
+matchmerged_char <- as.character(matchmerged_df)
+
+```
+
+```{r}
+class(matchmerged_char)
+```
+
+```{r}
+proj <- addCellColData(
+  ArchRProj = proj, # The ArchR project
+  data = matchmerged_df$`Cell Type`,  # The new columns
+  cells = matchmerged_df$row_names, #THANK YOU KEVIN 
+  name = "CellType", # The name of the table in the ArchR project to which the columns will be added
+  force = FALSE
+)
+```
+
+#Save ArchRProject
+```{r}
+saveArchRProject(ArchRProj = proj, outputDirectory = "Save-projHybrid805.2", load = FALSE)
+```
+
+#Access TSS-E Score
+```{r}
+quantile(proj$TSSEnrichment)
+```
+
+##QC and Initial Visualization
+#Log10 Unique Fragments vs. TSS
+```{r}
+logvsTSS <- getCellColData(proj, select = c("log10(nFrags)", "TSSEnrichment"))
+logvsTSS
+colnames(logvsTSS)
+# Convert DFrame to data.frame
+logvsTSS_df <- as.data.frame(logvsTSS)
+```
+
+```{r}
+summary(logvsTSS)
+```
+
+#Visualize LogvsTSS
+```{r}
+# p <- ggPoint(
+#     x = logvsTSS[,"log10(nFrags)"], 
+#     y = logvsTSS[,"TSSEnrichment"], 
+#     colorDensity = TRUE,
+#     continuousSet = "sambaNight",
+#     xlabel = "Log10 Unique Fragments",
+#     ylabel = "TSS Enrichment",
+#     xlim = c(log10(500), quantile(logvsTSS[,"log10(nFrags)"], probs = 0.99)),
+#     ylim = c(0, quantile(logvsTSS[,"TSSEnrichment"], probs = 0.99))
+# ) + geom_hline(yintercept = 4, lty = "dashed") + geom_vline(xintercept = 3, lty = "dashed")
+
+#Attempt to use ggplot2 instead of ggPoint
+library(ggplot2)
+
+# p <- ggplot(logvsTSS_df, aes(x = log10(nFrags), y = TSSEnrichment)) +
+#     geom_point() +
+#     scale_x_continuous(limits = c(log10(500), stats::quantile(logvsTSS_df$log10(nFrags), probs = 0.99))) +
+#     scale_y_continuous(limits = c(0, stats::quantile(logvsTSS_df$TSSEnrichment, probs = 0.99))) +
+#     geom_hline(yintercept = 4, lty = "dashed") +
+#     geom_vline(xintercept = 3, lty = "dashed") +
+#     labs(x = "Log10 Unique Fragments", y = "TSS Enrichment")
+
+# Get summary statistics
+summary_stats <- summary(logvsTSS_df)
+
+# Calculate 99th percentile for each variable
+quantile_nFrags <- quantile(logvsTSS_df$log10.nFrags., probs = 0.99)
+quantile_TSSEnrichment <- quantile(logvsTSS_df$TSSEnrichment, probs = 0.99)
+
+p <- ggplot(logvsTSS_df, aes(x = log10.nFrags., y = TSSEnrichment)) +
+    geom_point() +
+    scale_x_continuous(limits = c(log10(500), quantile_nFrags)) +
+    scale_y_continuous(limits = c(0, quantile_TSSEnrichment)) +
+    geom_hline(yintercept = 4, lty = "dashed") +
+    geom_vline(xintercept = 3, lty = "dashed") +
+    labs(x = "Log10 Unique Fragments", y = "TSS Enrichment")
+
+print(p)
+
+
+plotPDF(p, name = "TSS-vs-Frags.pdf", ArchRProj = proj, addDOC = FALSE)
+```
+#Trouble Shooting ggplot 
+```{r}
+#any(is.na(logvsTSS_df))
+#summary(logvsTSS_df)
+#str(logvsTSS_df)
+#This all looked good
+```
+
+#Ridge Plot for TSS
+```{r}
+p1 <- plotGroups(
+    ArchRProj = proj, 
+    groupBy = "Sample", 
+    colorBy = "cellColData", 
+    name = "TSSEnrichment",
+    plotAs = "ridges"
+   )
+p1
+```
+#Violin Plot for TSS
+```{r}
+p2 <- plotGroups(
+    ArchRProj = proj, 
+    groupBy = "Sample", 
+    colorBy = "cellColData", 
+    name = "TSSEnrichment",
+    plotAs = "violin",
+    alpha = 0.4,
+    addBoxPlot = TRUE
+   )
+
+p2
+#ggsave(p2)
+```
+#Ridge Plot per Sample Log10 Reads
+```{r}
+p3 <- plotGroups(
+    ArchRProj = proj, 
+    groupBy = "Sample", 
+    colorBy = "cellColData", 
+    name = "log10(nFrags)",
+    plotAs = "ridges"
+   )
+p3
+#ggsave(p3)
+```
+#Violin Plot per Sample Log10 Reads
+```{r}
+p4 <- plotGroups(
+    ArchRProj = proj, 
+    groupBy = "Sample", 
+    colorBy = "cellColData", 
+    name = "log10(nFrags)",
+    plotAs = "violin",
+    alpha = 0.4,
+    addBoxPlot = TRUE
+   )
+p4
+#ggsave(p4)
+```
+#3.4: Size Distribution and TSS E Profiles
+```{r}
+p5 <- plotFragmentSizes(ArchRProj = proj)
+p5
+```
+#3.4: ...and TSS E Profiles
+```{r}
+p6 <- plotTSSEnrichment(ArchRProj = proj)
+p6
+```
+#Save ArchRProject
+```{r}
+saveArchRProject(ArchRProj = proj, outputDirectory = "Save-projHybrid805.2", load = FALSE)
+```
+
+```{r}
+proj <- loadArchRProject(path = "Save-projHybrid805.2")
+```
+
+##Filter doublets (SKIP: Previously Done in BAM Generation)
+```{r}
+# projHybrid2 <- filterDoublets(projHybrid1)
+# projHeme2
+# projHemeTmp <- filterDoublets(projHybrid1, filterRatio = 1.5)
+```
+
+##Dimensionality Reduction w/ ArchR
+```{r}
+proj <- addIterativeLSI(
+    ArchRProj = proj,
+    useMatrix = "TileMatrix", 
+    name = "IterativeLSI", 
+    iterations = 2, 
+    clusterParams = list( #See Seurat::FindClusters
+        resolution = c(0.2), 
+        sampleCells = 10000, 
+        n.start = 10
+    ), 
+    varFeatures = 25000, 
+    dimsToUse = 1:30
+)
+```
+##Clustering*
+
+```{r}
+#install.packages("hexbin")
+library(hexbin)
+```
+
+
+```{r}
+proj <- addClusters(
+    input = proj,
+    reducedDims = "IterativeLSI",
+    method = "Seurat",
+    name = "Clusters",
+    resolution = 0.8
+)
+```
+
+```{r}
+head(proj$Clusters)
+table(proj$Clusters)
+```
+
+```{r}
+cM <- confusionMatrix(paste0(proj$Clusters), paste0(proj$CellType))
+
+```
+#Clustering Heatmap
+```{r} 
+library(pheatmap)
+cM <- cM / Matrix::rowSums(cM)
+hm1 <- pheatmap::pheatmap(
+    mat = as.matrix(cM),
+    color = paletteContinuous("whiteBlue"),
+    border_color = "black")
+
+```
+# Add UMAP
+```{r}
+proj <- addUMAP(
+    ArchRProj = proj, 
+    reducedDims = "IterativeLSI", 
+    name = "UMAP", 
+    nNeighbors = 30, 
+    minDist = 0.5, 
+    metric = "cosine"
+)
+```
+
+```{r}
+
+
+umap1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "CellType", embedding = "UMAP")
+
+umap1
+
+
+```
+
+```{r}
+# Define the cluster mapping
+cluster_mapping <- c(
+  "C2" = "Macrophage",
+  "C4" = "Tumor-cluster1",
+  "C1" = "Hybrid-M",
+  "C3" = "Hybrid-T",
+  "C5" = "Tumor-cluster2",
+  "C6" = "Tumor-cluster3"
+)
+
+# Add the new column to the ArchRProj
+proj <- addCellColData(
+  ArchRProj = proj,
+  data = cluster_mapping[proj$Clusters],
+  name = "UpdatedClusters",
+  cells = getCellNames(proj),
+  force = TRUE
+)
+
+customColors <- c(
+  "Macrophage" = "cadetblue3",
+  "Tumor-cluster1" = "grey45",
+  "Tumor-cluster2" = "grey45",
+  "Tumor-cluster3" = "grey45",
+  "Hybrid-M" = "blue4",
+  "Hybrid-T" = "red3")
+# Ensure UpdatedClusters is a factor with levels matching customColors
+proj$UpdatedClusters <- factor(proj$UpdatedClusters, levels = names(customColors))
+# Check the levels of UpdatedClusters
+levels(proj$UpdatedClusters)
+
+#umap2 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "CellType", embedding = "UMAP")
+umap3 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "UpdatedClusters", embedding = "UMAP", colorList = customColors)
+#umap2
+umap3
+
+# Extract UMAP coordinates and cluster information
+umap_df <- as.data.frame(getEmbedding(proj, embedding = "UMAP"))
+umap_df$UpdatedClusters <- proj$UpdatedClusters
+
+# Rename columns for easier plotting
+colnames(umap_df) <- c("UMAP_Dimension_1", "UMAP_Dimension_2", "UpdatedClusters")
+
+# Create UMAP plot using ggplot2
+ggplot(umap_df, aes(x = UMAP_Dimension_1, y = UMAP_Dimension_2, color = UpdatedClusters)) +
+  geom_point(size = 1) +
+  scale_color_manual(values = customColors) +
+  theme_minimal() +
+  labs(title = "UMAP of IterativeLSI colored by Updated Clusters")
+```
+
+# Simplifying Clusters
+```{r}
+#Confirming Current Cluster Assignments
+table(proj$UpdatedClusters)
+# Combining Tumor Clusters
+newClusters <- as.character(proj$UpdatedClusters)
+newClusters[newClusters %in% c("Tumor-cluster1", "Tumor-cluster2", "Tumor-cluster3")] <- "Tumor"
+proj$Clusters_TuMerged <- newClusters
+#Confirming Tumor Merged Cluster Assignments
+table(proj$Clusters_TuMerged)
+```
+#Remaking UMAP w/ Merged Tumor Clusters
+```{r}
+customColors <- c(
+  "Macrophage" = "cadetblue3",
+  "Tumor" = "grey45",
+  "Hybrid-M" = "blue4",
+  "Hybrid-T" = "red3")
+# Ensure UpdatedClusters is a factor with levels matching customColors
+proj$Clusters_TuMerged <- factor(proj$Clusters_TuMerged, levels = names(customColors))
+# Check the levels of UpdatedClusters
+levels(proj$Clusters_TuMerged)
+
+#umap2 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "CellType", embedding = "UMAP")
+umap3 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Clusters_TuMerged", embedding = "UMAP", colorList = customColors)
+#umap2
+umap3
+
+# Extract UMAP coordinates and cluster information
+umap_df <- as.data.frame(getEmbedding(proj, embedding = "UMAP"))
+umap_df$Clusters_TuMerged <- proj$Clusters_TuMerged
+
+# Rename columns for easier plotting
+colnames(umap_df) <- c("UMAP_Dimension_1", "UMAP_Dimension_2", "Clusters_TuMerged")
+
+# Create UMAP plot using ggplot2
+ggplot(umap_df, aes(x = UMAP_Dimension_1, y = UMAP_Dimension_2, color = Clusters_TuMerged)) +
+  geom_point(size = 1) +
+  scale_color_manual(values = customColors) +
+  theme_minimal() +
+  labs(title = "UMAP of IterativeLSI colored by Simplified Clusters")
+
+library(ggplot2)
+
+ggplot(umap_df, aes(x = UMAP_Dimension_1, y = UMAP_Dimension_2, color = Clusters_TuMerged)) +
+  geom_point(size = 1) +
+  scale_color_manual(values = customColors) +
+  coord_fixed() +
+  theme_minimal() +
+  theme(
+    axis.line = element_line(color = "black"),  # Makes both axes black
+    axis.ticks = element_line(color = "black"), # Optional: makes tick marks black too
+    axis.text = element_text(color = "black"),  # Optional: makes axis labels black
+    axis.title = element_text(color = "black")  # Optional: makes axis titles black
+  ) +
+  labs(title = "UMAP of IterativeLSI with Black Axes")
+
+
+```
+# TSNE
+```{r}
+proj <- addTSNE(
+    ArchRProj = proj, 
+    reducedDims = "IterativeLSI", 
+    name = "TSNE", 
+    perplexity = 30
+)
+```
+```{r}
+
+tsne1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "CellType", embedding = "TSNE")
+
+tsne1
+```
+
+# Save ArchRProject
+```{r}
+saveArchRProject(ArchRProj = proj, outputDirectory = "Save-projHybrid805.2", load = FALSE)
+```
+
+##Marker Genes
+
+# Load ArhcRProject if Needed
+```{r}
+proj <- loadArchRProject(path = "Save-projHybrid805.2")
+```
+
+```{r}
+markersGS <- getMarkerFeatures(
+    ArchRProj = proj, 
+    useMatrix = "GeneScoreMatrix", 
+    groupBy = "Clusters",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon"
+)
+
+markerList <- getMarkers(markersGS, cutOff = "FDR <= 0.01 & Log2FC >= 1.25")
+markerList$C5
+```
+
+```{r}
+#install.packages("magick")
+#library(magick)
+```
+
+```{r}
+markerGenes  <- c(
+    "CCR5", "CD14", "CD68", #Macrophage
+    #MC38
+    "RUNX1", "RUNX2", "NR1H3", "NTRK1", "BICDL2", "MIR99B", "Mtss1l", "Gng13" #Hybrid Fusion
+)
+
+heatmapGS <- plotMarkerHeatmap(
+  seMarker = markersGS, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
+  labelMarkers = markerGenes,
+  transpose = TRUE
+)
+heatmapGS
+```
+
+```{r}
+ComplexHeatmap::draw(heatmapGS, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+
+```
+
+```{r}
+plotPDF(heatmapGS, name = "GeneScores-Marker-Heatmap", width = 8, height = 6, ArchRProj = proj, addDOC = FALSE)
+```
+
+```{r}
+umap.marker <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = markerGenes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = NULL
+)
+
+umap.marker
+```
+
+```{r}
+umap.allgenes <- lapply(umap.marker, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),umap.allgenes))
+```
+
+#MAGIC
+```{r}
+proj <- addImputeWeights(proj)
+```
+
+```{r}
+magicplot <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = markerGenes, 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+magicplot
+```
+
+# Save ArchRProject
+```{r}
+saveArchRProject(ArchRProj = proj, outputDirectory = "Save-projHybrid805.2", load = FALSE)
+```
+
+#Track Plotting
+```{r}
+proj <- loadArchRProject(path = "Save-projHybrid805.2")
+```
+
+```{r}
+trackplot <- plotBrowserTrack(
+    ArchRProj = proj, 
+    groupBy = "Clusters", 
+    geneSymbol = markerGenes, 
+    upstream = 50000,
+    downstream = 50000
+)
+```
+
+```{r}
+grid::grid.newpage()
+grid::grid.draw(trackplot$Runx1)
+```
+
+#Renaming the Clusters was done here... [yes so the "fresh" hybrids that were from the plates we sorted that day without expanding the GFP/RFP double positive cells are more close to macrophages. and the hybrids from 7-1-22 experiment are the ones that had been selected over time in culture and sorted for double positive RFP+GFP over time]
+```{r}
+# Define the cluster mapping
+cluster_mapping <- c(
+  "C2" = "Macrophage",
+  "C4" = "Tumor-cluster1",
+  "C1" = "Hybrid-M",
+  "C3" = "Hybrid-T",
+  "C5" = "Tumor-cluster2",
+  "C6" = "Tumor-cluster3"
+)
+
+# Add the new column to the ArchRProj
+proj <- addCellColData(
+  ArchRProj = proj,
+  data = cluster_mapping[proj$Clusters],
+  name = "UpdatedClusters",
+  cells = getCellNames(proj),
+  force = TRUE
+)
+
+```
+#Trouble Shooting Steps
+```{r} 
+#table(archrProj$UpdatedClusters) #worked
+#head(proj$UpdatedClusters)
+#table(proj$UpdatedClusters)
+```
+
+```{r}
+# Define your custom color palette
+customColors <- c(
+  "Macrophage" = "cadetblue3",
+  "Tumor-cluster1" = "grey45",
+  "Tumor-cluster2" = "grey45",
+  "Tumor-cluster3" = "grey45",
+  "Hybrid-M" = "darkmagenta",
+  "Hybrid-T" = "red3"
+)
+# Plot UMAP by Cell Type with custom colors
+celltypecolorsnice <- plotEmbedding(
+  ArchRProj = proj,
+  colorBy = "cellColData",
+  name = "CellType",
+  embedding = "UMAP",
+  colorList = customColors
+)
+# Plot UMAP by Updated Clusters
+clusterstypecolorsnice<- plotEmbedding(
+  ArchRProj = proj,
+  colorBy = "cellColData",
+  name = "UpdatedClusters",
+  embedding = "UMAP"
+)
+
+# Display the plots
+plotPDF(celltypecolorsnice, clusterstypecolorsnice, name = "UMAP_CellType_UpdatedClusters.pdf", ArchRProj = proj, addDOC = FALSE)
+
+
+```
+
+#Defining Custome Colors to Match the Manuscript that Ashley's Been Working On
+```{r}
+library(ArchR)
+library(grid)
+# Define your custom color palette
+customColors <- c(
+  "Macrophage" = "cadetblue3",
+  "Tumor" = "grey45",
+  "Hybrid-M" = "blue4", #blue4
+  "Hybrid-T" = "red3")
+# Consider looking at Pf4, Spi1, Thbs1
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Runx1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Runx1)
+dev.off()  # Close current device if open
+dev.new()  # Open a new device
+plot(AS1211$Runx1)
+# Troubleshooting
+# print(AS1211)
+# str(AS1211)
+#print(AS1211$Runx1)
+```
+#20251103:AA Supplemental Asks
+```{r}
+# Define the path to your folder
+output_dir <- "20251103SupplementalGeneTracks"
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Epcam",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check CD CD45, CD11b, CD163, CD14 and Epcam, Ecad 
+#Try Cd45, Cd11b, Cd163, Cd14, Epcam, Ecad
+# Draw the plot
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Epcam_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Epcam)
+dev.off()
+```
+```{r}
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Cdh1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check CD CD45, CD11b, CD163, CD14 and Epcam, Ecad 
+#Try Cd45, Cd11b, Cd163, Cd14, Epcam, Ecad
+# Draw the plot
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Cdh1_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Cdh1)
+dev.off()
+```
+#20251201:AA Supplemental Asks
+```{r}
+# Define the path to your folder
+output_dir <- "20251201SupplementalGeneTracks"
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Cldn1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check Cldn1, Satb1, Satb2
+# Draw the plot
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Cldn1_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Cldn1)
+dev.off()
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Satb1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check Cldn1, Satb1, Satb2
+# Draw the plot
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Satb1_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Satb1)
+dev.off()
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Satb2",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check Cldn1, Satb1, Satb2
+# Draw the plot
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Satb2_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Satb2)
+dev.off()
+```
+#20251201:AA Supplemental Asks 2.0
+```{r}
+# Just compare two groups at a time - this usually works
+# First: Hybrid-T + Tumor vs Others
+proj$TwoGroup <- ifelse(
+  proj$Clusters_TuMerged %in% c("Hybrid-T", "Tumor"),
+  "HybridT_Tumor",
+  "Others"
+)
+
+# Get markers without bias correction
+markers <- getMarkerFeatures(
+  ArchRProj = proj,
+  useMatrix = "GeneScoreMatrix",
+  groupBy = "TwoGroup",
+  useGroups = "HybridT_Tumor",
+  bgdGroups = "Others",
+  testMethod = "wilcoxon"
+)
+
+# Extract significant genes
+markerList <- getMarkers(markers, cutOff = "FDR <= 0.05 & Log2FC >= 0.5")
+target_genes <- markerList$HybridT_Tumor$name
+
+print(paste("Found", length(target_genes), "candidate genes"))
+print(head(target_genes, 25))
+# Plot top genes
+for(gene in head(target_genes, 5)) {
+  p <- plotBrowserTrack(
+    ArchRProj = proj,
+    groupBy = "Clusters_TuMerged",
+    geneSymbol = gene,
+    upstream = 50000,
+    downstream = 50000,
+    pal = customColors
+  )
+  
+  pdf(paste0(output_dir, "/", gene, "_HybridT_Tumor.pdf"), width = 10, height = 8)
+  grid::grid.newpage()
+  grid::grid.draw(p[[gene]])
+  dev.off()
+  
+  print(paste("Plotted:", gene))
+}
+```
+#20251201:AA Supplemental Asks Part 3.0
+```{r}
+# Define the path to your folder
+output_dir <- "20251201SupplementalGeneTracks"
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Fosl1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check Fosl1, Col6a1, Fscn1
+# Draw the plot
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Fosl1_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Fosl1)
+dev.off()
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Col6a1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check Cldn1, Satb1, Satb2
+# Draw the plot
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Col6a1_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Col6a1)
+dev.off()
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Fscn1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check Cldn1, Satb1, Satb2, Cyr61
+# Draw the plot
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Fscn1_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Fscn1)
+dev.off()
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Cyr61",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+#Check Cldn1, Satb1, Satb2, Cyr61
+# Draw the plot
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+# Save the plot as PDF
+pdf(file.path(output_dir, "Cyr61_track.pdf"), width = 10, height = 8)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Cyr61)
+dev.off()
+```
+# Tracks for Other Genes of Interest
+```{r}
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Spi1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Pf4, Spi1, Thbs1
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Spi1)
+```
+```{r}
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Pf4",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Pf4, Spi1, Thbs1
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Pf4)
+```
+```{r}
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Thbs1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Pf4, Spi1, Thbs1
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Thbs1)
+```
+```{r}
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Grn",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Pf4, Spi1, Thbs1
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Grn)
+```
+```{r}
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "Clusters_TuMerged",
+  geneSymbol = "Lgals3",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Pf4, Spi1, Thbs1
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Lgals3)
+```
+
+```{r}
+# For Top 10 DGE for the Hybrid-M Cluster
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "UpdatedClusters",
+  geneSymbol = "Apoc2",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Apoc2, Lyz2, Mpeg1, Wldc17, Trobp, C1qa, C1qb, C1qc
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Apoc2)
+#Macropage and Hybrid-M look very similar. Hybrid T and the Tumors look similar for Apoc2.
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "UpdatedClusters",
+  geneSymbol = "Lyz2",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Apoc2, Lyz2, Mpeg1, Wldc17, Trobp, C1qa, C1qb, C1qc
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Lyz2)
+#Macropage and Hybrid-M look very similar. Hybrid T and the Tumors look similar for Lyz2.
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "UpdatedClusters",
+  geneSymbol = "Mpeg1",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Apoc2, Lyz2, Mpeg1, Wldc17, Trobp, C1qa, C1qb, C1qc
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$Mpeg1)
+#Macropage and Hybrid-M look very similar. Hybrid T and the Tumors look similar for Mpeg1 - actually striking for tumor/hybrids-m
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "UpdatedClusters",
+  geneSymbol = "C1qa",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+# Consider looking at Apoc2, Lyz2, Mpeg1, Wldc17(doesn't work), Trobp(doesn't work), C1qa, C1qb, C1qc
+# Draw the plot
+grid::grid.newpage()
+grid::grid.draw(AS1211$C1qa)
+#Macropage and Hybrid-M look very similar. 
+```
+```{r}
+#Top 10 DGE for Hybrid-T: Gsk3a, Hacd3, Ralgapb, Spire1, Tmem128, Eif2ak4, Prim2, Ythdf2, Cnot9
+#Unpersausive: Gsk3a, Hacd3, 
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "UpdatedClusters",
+  geneSymbol = "Ralgapb",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Ralgapb)
+#Macropage and Hybrid-T both have sharper, taller peaks
+# Create the track plot with custom colors
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "UpdatedClusters",
+  geneSymbol = "Prim2",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Prim2)
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "UpdatedClusters",
+  geneSymbol = "Ythdf2",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Ythdf2)
+AS1211 <- plotBrowserTrack(
+  ArchRProj = proj,
+  groupBy = "UpdatedClusters",
+  geneSymbol = "Eif2ak4",
+  upstream = 50000,
+  downstream = 50000,
+  pal = customColors)
+grid::grid.newpage()
+grid::grid.draw(AS1211$Eif2ak4)
+```
+#Launching ArchRBrowser
+```{r}
+#ArchRBrowser(projHybridA)
+```
+
+
+##Peak Calling
+
+```{r}
+pathToMacs2 <- "/Users/queitsch/opt/anaconda3/bin/MACS2"
+```
+
+```{r}
+#BiocManager::install("BSgenome.Mmusculus.UCSC.mm10")
+```
+
+```{r}
+
+# Error in .getCoverageMetadata(ArchRProj = ArchRProj, groupBy = groupBy,  : No Coverage Metadata found for : Clusters. Please run addGroupCoverages!
+
+# To address this... I'll try to run addGroupCoverages first
+proj <- addGroupCoverages(ArchRProj = proj, groupBy = "Clusters_TuMerged")
+```
+
+```{r}
+proj_motif <- addReproduciblePeakSet(
+    ArchRProj = proj, 
+    groupBy = "Clusters_TuMerged", 
+    pathToMacs2 = pathToMacs2
+)
+```
+
+```{r}
+saveArchRProject(ArchRProj = proj_motif, outputDirectory = "Save-ProjMotif", load = TRUE)
+#This worked for 250514: Complete
+#Prior two steps take a very long time so be sure to save here!!!
+```
+
+```{r}
+proj_motif <- loadArchRProject(path = "Save-ProjMotif")
+```
+
+```{r}
+getPeakSet(proj_motif)
+```
+
+```{r}
+proj_motif5 <- addPeakMatrix(proj_motif)
+```
+
+```{r}
+getAvailableMatrices(proj_motif5)
+```
+
+##Identifying Marker Peaks with ArchR
+
+```{r}
+proj_motif5 <- addCellColData(
+  ArchRProj = proj_motif5,
+  data = as.character(proj_motif5$Clusters_TuMerged),
+  name = "Clusters_TuMerged",
+  cells = proj_motif5$cellNames,
+  force = TRUE
+)
+
+```
+
+```{r}
+saveArchRProject(ArchRProj = proj_motif5, outputDirectory = "Save-ProjMotif", load = TRUE)
+```
+
+```{r}
+proj_motif5 <- loadArchRProject(path = "Save-ProjMotif")
+```
+
+```{r}
+markersPeaks <- getMarkerFeatures(
+    ArchRProj = proj_motif5, 
+    useMatrix = "PeakMatrix", 
+    groupBy = "Clusters_TuMerged",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon")
+```
+
+```{r}
+markersPeaks
+```
+
+```{r}
+markerList <- getMarkers(markersPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1")
+markerList
+```
+
+```{r}
+markerList$"Hybrid-M"
+```
+
+```{r}
+markerListGR <- getMarkers(markersPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1", returnGR = TRUE)
+markerListGR
+```
+
+```{r}
+heatmapPeaks <- plotMarkerHeatmap(
+  seMarker = markersPeaks, 
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5",
+  transpose = TRUE
+)
+```
+
+```{r}
+draw(heatmapPeaks, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+```
+
+```{r}
+plotPDF(heatmapPeaks, name = "Peak-Marker-Heatmap", width = 8, height = 6, ArchRProj = proj_motif5, addDOC = FALSE)
+```
+
+```{r}
+pma <- plotMarkers(seMarker = markersPeaks, name = "Hybrid-M", cutOff = "FDR <= 0.1 & Log2FC >= 1", plotAs = "MA")
+pma
+```
+
+```{r}
+pv <- plotMarkers(seMarker = markersPeaks, name = "Hybrid-M", cutOff = "FDR <= 0.1 & Log2FC >= 1", plotAs = "Volcano")
+pv
+```
+#Optional to generate vectorized PDF
+```{r}
+#plotPDF(pma, pv, name = "C1-Markers-MA-Volcano", width = 5, height = 5, ArchRProj = projHeme5, addDOC = FALSE)
+```
+
+```{r}
+p <- plotBrowserTrack(
+    ArchRProj = proj_motif5, 
+    groupBy = "Clusters_TuMerged", 
+    geneSymbol = c("RUNX1"),
+    features =  getMarkers(markersPeaks, cutOff = "FDR <= 0.1 & Log2FC >= 1", returnGR = TRUE)["Hybrid-M"],
+    upstream = 50000,
+    downstream = 50000
+)
+```
+
+```{r}
+grid::grid.newpage()
+grid::grid.draw(p$RUNX1)
+```
+
+```{r}
+plotPDF(p, name = "Plot-Tracks-With-Features", width = 5, height = 5, ArchRProj = proj_motif5, addDOC = FALSE)
+```
+
+#Pairwise testing between groups
+```{r}
+markerTest <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M",
+  bgdGroups = "Macrophage"
+)
+```
+# Plot Markers
+```{r}
+pma <- plotMarkers(seMarker = markerTest, name = "Hybrid-M", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 1", plotAs = "MA")
+class(pma)
+
+pmv <- plotMarkers(seMarker = markerTest, name = "Hybrid-M", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 1", plotAs = "Volcano")
+class(pmv)
+
+plotPDF(pma, name = "MA-Plot.pdf", ArchRProj = proj_motif5)
+plotPDF(pmv, name = "Volcano-Plot.pdf", ArchRProj = proj_motif5)
+
+
+plotPDF(pma, pmv, name = "Erythroid-vs-Progenitor-Markers-MA-Volcano", width = 5, height = 5, ArchRProj = proj_motif5, addDOC = FALSE)
+
+```
+## Motif Enrichment
+
+```{r}
+#devtools::install_github("GreenleafLab/chromVARmotifs")
+```
+# Set Motif Annotations (Crucial)
+```{r}
+#library(BSgenome.Mmusculus.UCSC.mm10)
+proj_motif5 <- addMotifAnnotations(ArchRProj = proj_motif5, motifSet = "cisbp", name = "Motif")
+```
+# Save Motif Annotations to ArchR Project
+```{r}
+saveArchRProject(ArchRProj = proj_motif5, outputDirectory = "Save-ProjMotif", load = TRUE)
+```
+# [TBD]
+```{r}
+pSet <- getPeakSet(ArchRProj = proj_motif5)
+pSet$name <- paste(seqnames(pSet), start(pSet), end(pSet), sep = "_")
+```
+```{r}
+matches <- getMatches(ArchRProj = proj_motif5, name = "Motif")
+rownames(matches) <- paste(seqnames(matches), start(matches), end(matches), sep = "_")
+matches <- matches[pSet$name]
+```
+```{r}
+motifsUp <- peakAnnoEnrichment(
+    seMarker = markerTest,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+```
+# Enrichment Heatmap
+```{r}
+# plotEnrichHeatmap(motifsUp, n = 20, transpose = TRUE)
+# pdf("HybirdM_Tumor_Motif_Enrichment_Heatmap.pdf", width = 8, height = 6)
+# plotEnrichHeatmap(enrichMotifs, n = 20, transpose = TRUE)
+# dev.off()
+```
+# Enrichment +
+```{r}
+df <- data.frame(TF = rownames(motifsUp), mlog10Padj = assay(motifsUp)[,1])
+df <- df[order(df$mlog10Padj, decreasing = TRUE),]
+df$rank <- seq_len(nrow(df))
+```
+
+```{r}
+head(df)
+```
+
+```{r}
+ggUp <- ggplot(df, aes(rank, mlog10Padj, color = mlog10Padj)) + 
+  geom_point(size = 1) +
+  ggrepel::geom_label_repel(
+        data = df[rev(seq_len(30)), ], aes(x = rank, y = mlog10Padj, label = TF), 
+        size = 1.5,
+        nudge_x = 2,
+        color = "black",
+        max.overlaps = 30  # Increase max.overlaps
+  ) + theme_ArchR() + 
+  ylab("-log10(P-adj) Motif Enrichment") + 
+  xlab("Rank Sorted TFs Enriched") +
+  scale_color_gradientn(colors = paletteContinuous(set = "comet"))
+
+ggUp
+#This worked when I typed it into the console and hit enter...
+pdf("ggUp_plot.pdf", width = 6, height = 4)
+print(ggUp)
+dev.off()
+```
+```{r}
+top10 <- df[order(-df$mlog10Padj), ][1:10, ]
+
+
+dotmotifenrich_HMvM <- ggplot(top10, aes(x = reorder(TF, mlog10Padj), y = mlog10Padj)) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  coord_flip() +  # Makes it horizontal
+  labs(
+    x = "Transcription Factor (Motif)",
+    y = "-log10(P-adj)",
+    title = "Top Enriched Motifs (Differential Hybrid-M vs. Marcophage)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+pdf("dotmotifenrich_HMvM.pdf", width = 6, height = 4)
+print(dotmotifenrich_HMvM)
+dev.off()
+```
+# For Hybrid-M vs. Tumor
+```{r}
+markerTest_HMvT <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M",
+  bgdGroups = "Tumor"
+)
+motifsUp_HMvT <- peakAnnoEnrichment(
+    seMarker = markerTest_HMvT,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+df_HMvT <- data.frame(TF = rownames(motifsUp_HMvT), mlog10Padj = assay(motifsUp_HMvT)[,1])
+df_HMvT <- df_HMvT[order(df_HMvT$mlog10Padj, decreasing = TRUE),]
+df_HMvT$rank <- seq_len(nrow(df_HMvT))
+
+top10_HMvT <- df_HMvT[order(-df$mlog10Padj), ][1:10, ]
+
+
+dotmotifenrich_HMvT <- ggplot(top10_HMvT, aes(x = reorder(TF, mlog10Padj), y = mlog10Padj)) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  coord_flip() +  # Makes it horizontal
+  labs(
+    x = "Transcription Factor (Motif)",
+    y = "-log10(P-adj)",
+    title = "Top Enriched Motifs (Differential Hybrid-M vs. Tumor)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+pdf("dotmotifenrich_HMvT.pdf", width = 6, height = 4)
+print(dotmotifenrich_HMvT)
+dev.off()
+```
+# For Hybrid-M vs. Hybrid-T
+```{r}
+markerTest_HMvHT <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M",
+  bgdGroups = "Hybrid-T"
+)
+motifsUp_HMvHT <- peakAnnoEnrichment(
+    seMarker = markerTest_HMvHT,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+df_HMvHT <- data.frame(TF = rownames(motifsUp_HMvHT), mlog10Padj = assay(motifsUp_HMvHT)[,1])
+df_HMvHT <- df_HMvHT[order(df_HMvHT$mlog10Padj, decreasing = TRUE),]
+df_HMvHT$rank <- seq_len(nrow(df_HMvHT))
+
+top10_HMvHT <- df_HMvHT[order(-df$mlog10Padj), ][1:10, ]
+
+
+dotmotifenrich_HMvHT <- ggplot(top10_HMvHT, aes(x = reorder(TF, mlog10Padj), y = mlog10Padj)) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  coord_flip() +  # Makes it horizontal
+  labs(
+    x = "Transcription Factor (Motif)",
+    y = "-log10(P-adj)",
+    title = "Top Enriched Motifs (Differential Hybrid-M vs. Hybrid-T)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+pdf("dotmotifenrich_HMvHT.pdf", width = 6, height = 4)
+print(dotmotifenrich_HMvHT)
+dev.off()
+```
+# For Hybrid-T vs. Macrophage
+```{r}
+markerTest_HTvM <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-T",
+  bgdGroups = "Macrophage"
+)
+motifsUp_HTvM <- peakAnnoEnrichment(
+    seMarker = markerTest_HTvM,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+df_HTvM <- data.frame(TF = rownames(motifsUp_HTvM), mlog10Padj = assay(motifsUp_HTvM)[,1])
+df_HTvM <- df_HTvM[order(df_HTvM$mlog10Padj, decreasing = TRUE),]
+df_HTvM$rank <- seq_len(nrow(df_HTvM))
+
+top10_HTvM <- df_HTvM[order(-df$mlog10Padj), ][1:10, ]
+
+
+dotmotifenrich_HTvM <- ggplot(top10_HTvM, aes(x = reorder(TF, mlog10Padj), y = mlog10Padj)) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  coord_flip() +  # Makes it horizontal
+  labs(
+    x = "Transcription Factor (Motif)",
+    y = "-log10(P-adj)",
+    title = "Top Enriched Motifs (Differential Hybrid-T vs. Macrophage)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+pdf("dotmotifenrich_HTvM.pdf", width = 6, height = 4)
+print(dotmotifenrich_HTvM)
+dev.off()
+```
+# For Hybrid-T vs. Tumor
+```{r}
+markerTest_HTvT <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-T",
+  bgdGroups = "Tumor"
+)
+motifsUp_HTvT <- peakAnnoEnrichment(
+    seMarker = markerTest_HTvT,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+df_HTvT <- data.frame(TF = rownames(motifsUp_HTvT), mlog10Padj = assay(motifsUp_HTvT)[,1])
+df_HTvT <- df_HTvT[order(df_HTvT$mlog10Padj, decreasing = TRUE),]
+df_HTvT$rank <- seq_len(nrow(df_HTvT))
+
+top10_HTvT <- df_HTvT[order(-df$mlog10Padj), ][1:10, ]
+
+
+dotmotifenrich_HTvT <- ggplot(top10_HTvT, aes(x = reorder(TF, mlog10Padj), y = mlog10Padj)) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  coord_flip() +  # Makes it horizontal
+  labs(
+    x = "Transcription Factor (Motif)",
+    y = "-log10(P-adj)",
+    title = "Top Enriched Motifs (Differential Hybrid-T vs. Tumor)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+pdf("dotmotifenrich_HTvT.pdf", width = 6, height = 4)
+print(dotmotifenrich_HTvT)
+dev.off()
+```
+# For Hybrid-M vs. Macrophage Updated for Only Enrichment
+```{r}
+markerTest_HMvM <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M",
+  bgdGroups = "Macrophage"
+)
+# Enriched motifs (Log2FC >= 0.5)
+motifsUp_HMvM <- peakAnnoEnrichment(
+    seMarker = markerTest_HMvM,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+
+
+# Data frame for enriched motifs
+df_up_HMvM <- data.frame(
+  TF = rownames(motifsUp_HMvM),
+  mlog10Padj = assay(motifsUp_HMvM)[,1],
+  Direction = "Enriched"
+)
+# Remove _ and trailing numbers from TF names
+df_up_HMvM$TF <- sub("_\\d+$", "", df_up_HMvM$TF)
+df_up_HMvM <- df_up_HMvM[order(df_up_HMvM$mlog10Padj, decreasing = TRUE), ]
+top10_up <- head(df_up_HMvM, 10)
+
+# Combine top 5 enriched and depleted
+top_motifs_HMvM_E <- rbind(top10_up)
+
+
+# Plot
+dotmotifenrich_HMvM_Enriched_Updated <- ggplot(top_motifs_HMvM_E, aes(x = reorder(TF, mlog10Padj), y = mlog10Padj)) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  coord_flip() +  # Makes it horizontal
+  labs(
+    x = "Transcription Factor (Motif)",
+    y = "-log10(P-adj)",
+    title = "Top Enriched Motifs (Differential Hybrid-M vs. Macrophage)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+# Save plot
+pdf("dotmotifenrich_HMvM_Enriched_Updated.pdf", width = 6, height = 4)
+print(dotmotifenrich_HMvM_Enriched_Updated)
+dev.off()
+```
+# For Hybrid-M vs. Macrophage Updated for Depletion
+```{r}
+markerTest_HMvM <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M",
+  bgdGroups = "Macrophage"
+)
+# Enriched motifs (Log2FC >= 0.5)
+motifsUp_HMvM <- peakAnnoEnrichment(
+    seMarker = markerTest_HMvM,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+# Depleted motifs (Log2FC <= -0.5)
+motifsDown_HMvM <- peakAnnoEnrichment(
+  seMarker = markerTest_HMvM,
+  ArchRProj = proj_motif5,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC <= -0.5"
+)
+
+# Data frame for enriched motifs
+df_up_HMvM <- data.frame(
+  TF = rownames(motifsUp_HMvM),
+  mlog10Padj = assay(motifsUp_HMvM)[,1],
+  Direction = "Enriched"
+)
+# Remove _ and trailing numbers from TF names
+df_up_HMvM$TF <- sub("_\\d+$", "", df_up_HMvM$TF)
+df_up_HMvM <- df_up_HMvM[order(df_up_HMvM$mlog10Padj, decreasing = TRUE), ]
+top5_up <- head(df_up_HMvM, 5)
+
+# Data frame for depleted motifs
+df_down_HMvM <- data.frame(
+  TF = rownames(motifsDown_HMvM),
+  mlog10Padj = assay(motifsDown_HMvM)[,1],
+  Direction = "Depleted"
+)
+# Remove _ and trailing numbers from TF names
+df_down_HMvM$TF <- sub("_\\d+$", "", df_down_HMvM$TF)
+df_down_HMvM <- df_down_HMvM[order(df_down_HMvM$mlog10Padj, decreasing = TRUE), ]
+top5_down <- head(df_down_HMvM, 5)
+
+# Combine top 5 enriched and depleted
+top_motifs <- rbind(top5_up, top5_down)
+
+
+# Plot
+dotmotifenrich_HMvM_Updated <- ggplot(top_motifs, aes(x = reorder(TF, mlog10Padj), y = mlog10Padj, color = Direction)) +
+  geom_point(aes(size = mlog10Padj)) +
+  coord_flip() +  # Horizontal plot
+  labs(
+    x = "Transcription Factor (Motif)",
+    y = "-log10(P-adj)",
+    title = "Top 5 Enriched and Depleted Motifs (Hybrid-M vs. Macrophage)"
+  ) +
+  scale_color_manual(values = c("Enriched" = "red", "Depleted" = "blue")) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+# Save plot
+pdf("dotmotifenrich_HMvM_Updated.pdf", width = 6, height = 4)
+print(dotmotifenrich_HMvM_Updated)
+dev.off()
+```
+
+## Plotting Motif Logos 
+```{r}
+#install.packages("ggseqlogo")
+```
+```{r}
+library(ggseqlogo)
+logo_runx1 <- getPeakAnnotation(proj_motif5, "Motif")$motifs[["Runx1_712"]]
+
+PWMatrixToProbMatrix <- function(x){
+  if (class(x) != "PWMatrix") stop("x must be a TFBSTools::PWMatrix object")
+  m <- (exp(as(x, "matrix"))) * TFBSTools::bg(x)/sum(TFBSTools::bg(x))
+  m <- t(t(m)/colSums(m))
+  m
+}
+ppm_runx1 <- PWMatrixToProbMatrix(logo_runx1)
+colSums(ppm_runx1) %>% range
+logo_plot <- ggseqlogo(ppm_runx1, method = "bits")
+ggsave("runx1_logo.png", plot = logo_plot, width = 6, height = 3, dpi = 300)
+
+```
+
+```{r}
+#install.packages("ggimage")
+```
+```{r}
+# Load required libraries
+library(ArchR)
+library(ggplot2)
+library(ggimage)
+library(TFBSTools)
+library(grid)
+library(dplyr)
+
+# Create MotifMatrix by computing deviations
+proj_motif5 <- addDeviationsMatrix(
+  ArchRProj = proj_motif5,
+  matrixName = "MotifMatrix"
+)
+```
+
+```{r}
+exists("getPwm", envir = asNamespace("ArchR"))
+
+print(top_motifs_HMvM_E)
+# Check if logo files exist
+sapply(top_motifs_HMvM_E$logo_path, file.exists)
+
+
+```
+# Plotting Hybrid-M vs. Macrophage Enriched Motifs w/ Logos
+```{r}
+# Your existing code to get enriched motifs
+markerTest_HMvM <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M",
+  bgdGroups = "Macrophage"
+)
+
+# Enriched motifs (Log2FC >= 0.5)
+motifsUp_HMvM <- peakAnnoEnrichment(
+    seMarker = markerTest_HMvM,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+)
+
+# Data frame for enriched motifs
+df_up_HMvM <- data.frame(
+  TF = rownames(motifsUp_HMvM),
+  mlog10Padj = assay(motifsUp_HMvM)[,1],
+  Direction = "Enriched"
+)
+
+# Remove _ and trailing numbers from TF names
+df_up_HMvM$TF <- sub("_\\d+$", "", df_up_HMvM$TF)
+df_up_HMvM <- df_up_HMvM[order(df_up_HMvM$mlog10Padj, decreasing = TRUE), ]
+top10_up <- head(df_up_HMvM, 10)
+
+# Combine top 10 enriched motifs
+top_motifs_HMvM_E <- top10_up
+
+# Directory to save motif logos
+dir.create("motif_logos", showWarnings = FALSE)
+
+# Function to generate and save motif logos
+generateMotifLogo <- function(motif_name, archr_project, output_dir) {
+  # Get available motifs
+  motifs <- tryCatch({
+    getFeatures(archr_project, useMatrix = "MotifMatrix")
+  }, error = function(e) {
+    warning(paste("Failed to retrieve MotifMatrix features:", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motifs) || !motif_name %in% motifs) {
+    warning(paste("Motif", motif_name, "not found in MotifMatrix"))
+    return(NULL)
+  }
+  
+  # Get motif PWM from annotations
+  motif_pwm <- tryCatch({
+    motif_annotations <- getPeakAnnotation(archr_project, "Motif")$motifs
+    if (!motif_name %in% names(motif_annotations)) {
+      stop(paste("Motif", motif_name, "not found in annotations"))
+    }
+    pwm <- motif_annotations[[motif_name]]@profileMatrix
+    pwm
+  }, error = function(e) {
+    warning(paste("PWM not found for", motif_name, ":", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motif_pwm)) {
+    return(NULL)
+  }
+  
+  # Convert PWM to PFMatrix
+  pwm_matrix <- as.matrix(motif_pwm)
+  pfm <- PFMatrix(ID = motif_name, name = motif_name, profileMatrix = pwm_matrix)
+  
+  # Save logo as PNG
+  output_file <- file.path(output_dir, paste0(motif_name, ".png"))
+  png(output_file, width = 200, height = 100)
+  seqLogo(pfm)
+  dev.off()
+  
+  return(output_file)
+}
+
+# Generate logos for top 10 motifs and add image paths to data frame
+top_motifs_HMvM_E$logo_path <- sapply(top_motifs_HMvM_E$TF, function(tf) {
+  generateMotifLogo(tf, proj_motif5, "motif_logos")
+})
+
+# Check if any logos failed to generate
+top_motifs_HMvM_E <- top_motifs_HMvM_E[!is.null(top_motifs_HMvM_E$logo_path), ]
+
+# Create and save plot
+dotmotifenrich_HMvM_Enriched_Updated <- ggplot(top_motifs_HMvM_E, 
+                                              aes(x = mlog10Padj, y = reorder(TF, mlog10Padj))) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  geom_image(aes(y = reorder(TF, mlog10Padj), image = logo_path), size = 0.2, nudge_x = -0.5, by = "height") +
+  labs(
+    x = "-log10(P-adj)",
+    y = "Transcription Factor (Motif)",
+    title = "Top Enriched Motifs (Differential Hybrid-M vs. Macrophage)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10), # Show motif names
+    axis.text.x = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_text(size = 12)
+  )
+
+# Save plot
+pdf("250515_dotmotifenrich_HMvM_Enriched_WithLogos.pdf", width = 8, height = 6)
+print(dotmotifenrich_HMvM_Enriched_Updated)
+dev.off()
+```
+
+# Trouble Shoot Motif Annotations
+```{r}
+# Load required libraries
+library(ArchR)
+library(ggplot2)
+library(ggimage)
+library(TFBSTools)
+library(grid)
+library(dplyr)
+
+# Re-add motif annotations with cisbp
+proj_motif5 <- addMotifAnnotations(
+  ArchRProj = proj_motif5,
+  motifSet = "cisbp",
+  name = "Motif",
+  force = TRUE # Overwrite existing annotations
+)
+
+# Re-generate MotifMatrix
+proj_motif5 <- addDeviationsMatrix(
+  ArchRProj = proj_motif5,
+  matrixName = "MotifMatrix",
+  force = TRUE # Overwrite existing MotifMatrix
+)
+
+motifs <- getFeatures(proj_motif5, useMatrix = "MotifMatrix")
+print(head(motifs))
+grep("Runx", motifs, value = TRUE)
+```
+# Is this the code that actually worked??!?!
+```{r}
+# Load required libraries
+library(ArchR)
+library(ggplot2)
+library(ggimage)
+library(ggseqlogo)
+library(TFBSTools)
+library(grid)
+library(dplyr)
+
+# Ensure MotifMatrix exists
+if (!"MotifMatrix" %in% getAvailableMatrices(proj_motif5)) {
+  cat("Adding motif annotations and generating MotifMatrix...\n")
+  proj_motif5 <- addMotifAnnotations(
+    ArchRProj = proj_motif5,
+    motifSet = "cisbp",
+    name = "Motif",
+    force = TRUE
+  )
+  proj_motif5 <- addDeviationsMatrix(
+    ArchRProj = proj_motif5,
+    matrixName = "MotifMatrix",
+    force = TRUE
+  )
+}
+
+# Verify MotifMatrix motifs
+cat("Available motifs in MotifMatrix:\n")
+motifs <- getFeatures(proj_motif5, useMatrix = "MotifMatrix")
+print(head(motifs))
+print(grep("Runx", motifs, value = TRUE))
+
+# Your existing code for marker features and motif enrichment
+markerTest_HMvM <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M",
+  bgdGroups = "Macrophage"
+)
+
+motifsUp_HMvM <- peakAnnoEnrichment(
+  seMarker = markerTest_HMvM,
+  ArchRProj = proj_motif5,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+)
+
+# Verify enriched motif names
+cat("Enriched motifs from peakAnnoEnrichment:\n")
+print(head(rownames(motifsUp_HMvM)))
+
+# Data frame for enriched motifs
+df_up_HMvM <- data.frame(
+  TF = rownames(motifsUp_HMvM),
+  mlog10Padj = assay(motifsUp_HMvM)[,1],
+  Direction = "Enriched"
+)
+
+# Sort and select top 10
+df_up_HMvM <- df_up_HMvM[order(df_up_HMvM$mlog10Padj, decreasing = TRUE), ]
+top10_up <- head(df_up_HMvM, 10)
+top_motifs_HMvM_E <- top10_up
+
+# Verify motif names
+cat("Top enriched motifs:\n")
+print(top_motifs_HMvM_E$TF)
+
+# Directory for motif logos
+dir.create("motif_logos", showWarnings = FALSE)
+
+# Function to convert PWMatrix to probability matrix
+PWMatrixToProbMatrix <- function(x){
+  if (class(x) != "PWMatrix") stop("x must be a TFBSTools::PWMatrix object")
+  m <- (exp(as(x, "matrix"))) * TFBSTools::bg(x)/sum(TFBSTools::bg(x))
+  m <- t(t(m)/colSums(m))
+  m
+}
+
+# Function to generate and save motif logos using ggseqlogo
+generateMotifLogo <- function(motif_name, archr_project, output_dir) {
+  cat("Attempting to process motif:", motif_name, "\n")
+  
+  # Get available motifs from MotifMatrix
+  motifs <- tryCatch({
+    getFeatures(archr_project, useMatrix = "MotifMatrix")
+  }, error = function(e) {
+    warning(paste("Failed to retrieve MotifMatrix features:", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motifs)) {
+    warning("No motifs found in MotifMatrix")
+    return(NULL)
+  }
+  
+  # Check for motif with deviations: or z: prefix
+  motif_in_matrix <- motif_name
+  if (!motif_name %in% motifs) {
+    prefixed_name <- paste0("deviations:", motif_name)
+    if (prefixed_name %in% motifs) {
+      cat("Found motif with deviations: prefix:", prefixed_name, "\n")
+      motif_in_matrix <- prefixed_name
+    } else {
+      prefixed_name <- paste0("z:", motif_name)
+      if (prefixed_name %in% motifs) {
+        cat("Found motif with z: prefix:", prefixed_name, "\n")
+        motif_in_matrix <- prefixed_name
+      } else {
+        warning(paste("Motif", motif_name, "not found in MotifMatrix. Available motifs:", paste(head(motifs), collapse = ", ")))
+        return(NULL)
+      }
+    }
+  }
+  
+  # Get motif PWMatrix from annotations (using raw motif name)
+  motif_pwm <- tryCatch({
+    motif_annotations <- getPeakAnnotation(archr_project, "Motif")$motifs
+    if (is.null(motif_annotations)) {
+      warning("Motif annotations not found")
+      return(NULL)
+    }
+    if (!motif_name %in% names(motif_annotations)) {
+      warning(paste("Motif", motif_name, "not found in annotations. Available annotations:", paste(head(names(motif_annotations)), collapse = ", ")))
+      return(NULL)
+    }
+    pwm <- motif_annotations[[motif_name]] # Get PWMatrix object
+    pwm
+  }, error = function(e) {
+    warning(paste("Failed to retrieve PWMatrix for", motif_name, ":", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motif_pwm)) {
+    warning(paste("No PWMatrix retrieved for", motif_name))
+    return(NULL)
+  }
+  
+  cat("PWMatrix retrieved for", motif_name, "\n")
+  
+  # Convert PWMatrix to probability matrix
+  tryCatch({
+    ppm <- PWMatrixToProbMatrix(motif_pwm)
+    cat("Probability matrix created for", motif_name, "\n")
+    
+    # Save logo as PNG using ggseqlogo
+    output_file <- file.path(output_dir, paste0(motif_name, "_logo.png"))
+    cat("Attempting to save logo to", output_file, "\n")
+    
+    logo_plot <- ggseqlogo(ppm, method = "bits")
+    ggsave(output_file, plot = logo_plot, width = 6, height = 3, dpi = 300)
+    
+    if (file.exists(output_file)) {
+      cat("Logo successfully created for", motif_name, "at", output_file, "\n")
+      return(output_file)
+    } else {
+      warning("Failed to create logo file for", motif_name)
+      return(NULL)
+    }
+  }, error = function(e) {
+    warning(paste("Failed to save logo for", motif_name, ":", e$message))
+    return(NULL)
+  })
+}
+
+# Generate logos using original motif names
+top_motifs_HMvM_E$logo_path <- sapply(top_motifs_HMvM_E$TF, function(tf) {
+  generateMotifLogo(tf, proj_motif5, "motif_logos")
+})
+
+# Trim motif names for display *after* logo generation
+top_motifs_HMvM_E$TF_display <- sub("_\\d+$", "", top_motifs_HMvM_E$TF)
+
+# Check logo paths and existence
+print("Logo paths:")
+print(top_motifs_HMvM_E$logo_path)
+print("Files exist:")
+logo_exists <- sapply(top_motifs_HMvM_E$logo_path, function(x) is.character(x) && nzchar(x) && file.exists(x))
+print(logo_exists)
+cat("Generated logo files:\n")
+print(list.files("motif_logos", pattern = "*.png", full.names = TRUE))
+
+# Create and save plot
+dotmotifenrich_HMvM_Enriched_Updated <- ggplot(top_motifs_HMvM_E, 
+                                              aes(x = mlog10Padj, y = reorder(TF_display, mlog10Padj))) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  { if (any(logo_exists)) 
+      geom_image(aes(x = 1.5, y = reorder(TF_display, mlog10Padj), image = logo_path), 
+                 size = 0.1, nudge_y = 0.2, by = "height") } +
+  scale_x_continuous(limits = c(1, max(top_motifs_HMvM_E$mlog10Padj) * 1.1)) +
+  labs(
+    x = "-log10(P-adj)",
+    y = "Transcription Factor (Motif)",
+    title = "Top Enriched Motifs (Differential Hybrid-M vs. Macrophage)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_text(size = 12)
+  )
+
+# Save plot
+pdf("dotmotifenrich_HMvM_Enriched_WithLogos.pdf", width = 8, height = 6)
+print(dotmotifenrich_HMvM_Enriched_Updated)
+dev.off()
+```
+# Plotting Hybrid-M vs. Tumor Enriched Motifs w/ Logos
+```{r}
+# Load required libraries
+library(ArchR)
+library(ggplot2)
+library(ggimage)
+library(ggseqlogo)
+library(TFBSTools)
+library(grid)
+library(dplyr)
+
+# Ensure MotifMatrix exists
+if (!"MotifMatrix" %in% getAvailableMatrices(proj_motif5)) {
+  cat("Adding motif annotations and generating MotifMatrix...\n")
+  proj_motif5 <- addMotifAnnotations(
+    ArchRProj = proj_motif5,
+    motifSet = "cisbp",
+    name = "Motif",
+    force = TRUE
+  )
+  proj_motif5 <- addDeviationsMatrix(
+    ArchRProj = proj_motif5,
+    matrixName = "MotifMatrix",
+    force = TRUE
+  )
+}
+
+# Verify MotifMatrix motifs
+cat("Available motifs in MotifMatrix:\n")
+motifs <- getFeatures(proj_motif5, useMatrix = "MotifMatrix")
+print(head(motifs))
+print(grep("Runx", motifs, value = TRUE))
+
+# Your existing code for marker features and motif enrichment
+markerTest_HMvT <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M",
+  bgdGroups = "Tumor"
+)
+
+motifsUp_HMvT <- peakAnnoEnrichment(
+  seMarker = markerTest_HMvT,
+  ArchRProj = proj_motif5,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+)
+
+# Verify enriched motif names
+cat("Enriched motifs from peakAnnoEnrichment:\n")
+print(head(rownames(motifsUp_HMvT)))
+
+# Data frame for enriched motifs
+df_up_HMvT <- data.frame(
+  TF = rownames(motifsUp_HMvT),
+  mlog10Padj = assay(motifsUp_HMvT)[,1],
+  Direction = "Enriched"
+)
+
+# Sort and select top 10
+df_up_HMvT <- df_up_HMvT[order(df_up_HMvT$mlog10Padj, decreasing = TRUE), ]
+top10_up_HMvT <- head(df_up_HMvT, 10)
+top_motifs_HMvT_E <- top10_up_HMvT
+
+# Verify motif names
+cat("Top enriched motifs:\n")
+print(top_motifs_HMvT_E$TF)
+
+# Directory for motif logos
+dir.create("motif_logos", showWarnings = FALSE)
+
+# Function to convert PWMatrix to probability matrix
+PWMatrixToProbMatrix <- function(x){
+  if (class(x) != "PWMatrix") stop("x must be a TFBSTools::PWMatrix object")
+  m <- (exp(as(x, "matrix"))) * TFBSTools::bg(x)/sum(TFBSTools::bg(x))
+  m <- t(t(m)/colSums(m))
+  m
+}
+
+# Function to generate and save motif logos using ggseqlogo
+generateMotifLogo <- function(motif_name, archr_project, output_dir) {
+  cat("Attempting to process motif:", motif_name, "\n")
+  
+  # Get available motifs from MotifMatrix
+  motifs <- tryCatch({
+    getFeatures(archr_project, useMatrix = "MotifMatrix")
+  }, error = function(e) {
+    warning(paste("Failed to retrieve MotifMatrix features:", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motifs)) {
+    warning("No motifs found in MotifMatrix")
+    return(NULL)
+  }
+  
+  # Check for motif with deviations: or z: prefix
+  motif_in_matrix <- motif_name
+  if (!motif_name %in% motifs) {
+    prefixed_name <- paste0("deviations:", motif_name)
+    if (prefixed_name %in% motifs) {
+      cat("Found motif with deviations: prefix:", prefixed_name, "\n")
+      motif_in_matrix <- prefixed_name
+    } else {
+      prefixed_name <- paste0("z:", motif_name)
+      if (prefixed_name %in% motifs) {
+        cat("Found motif with z: prefix:", prefixed_name, "\n")
+        motif_in_matrix <- prefixed_name
+      } else {
+        warning(paste("Motif", motif_name, "not found in MotifMatrix. Available motifs:", paste(head(motifs), collapse = ", ")))
+        return(NULL)
+      }
+    }
+  }
+  
+  # Get motif PWMatrix from annotations (using raw motif name)
+  motif_pwm <- tryCatch({
+    motif_annotations <- getPeakAnnotation(archr_project, "Motif")$motifs
+    if (is.null(motif_annotations)) {
+      warning("Motif annotations not found")
+      return(NULL)
+    }
+    if (!motif_name %in% names(motif_annotations)) {
+      warning(paste("Motif", motif_name, "not found in annotations. Available annotations:", paste(head(names(motif_annotations)), collapse = ", ")))
+      return(NULL)
+    }
+    pwm <- motif_annotations[[motif_name]] # Get PWMatrix object
+    pwm
+  }, error = function(e) {
+    warning(paste("Failed to retrieve PWMatrix for", motif_name, ":", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motif_pwm)) {
+    warning(paste("No PWMatrix retrieved for", motif_name))
+    return(NULL)
+  }
+  
+  cat("PWMatrix retrieved for", motif_name, "\n")
+  
+  # Convert PWMatrix to probability matrix
+  tryCatch({
+    ppm <- PWMatrixToProbMatrix(motif_pwm)
+    cat("Probability matrix created for", motif_name, "\n")
+    
+    # Save logo as PNG using ggseqlogo
+    output_file <- file.path(output_dir, paste0(motif_name, "_logo.png"))
+    cat("Attempting to save logo to", output_file, "\n")
+    
+    logo_plot <- ggseqlogo(ppm, method = "bits")
+    ggsave(output_file, plot = logo_plot, width = 6, height = 3, dpi = 300)
+    
+    if (file.exists(output_file)) {
+      cat("Logo successfully created for", motif_name, "at", output_file, "\n")
+      return(output_file)
+    } else {
+      warning("Failed to create logo file for", motif_name)
+      return(NULL)
+    }
+  }, error = function(e) {
+    warning(paste("Failed to save logo for", motif_name, ":", e$message))
+    return(NULL)
+  })
+}
+
+# Generate logos using original motif names
+top_motifs_HMvT_E$logo_path <- sapply(top_motifs_HMvT_E$TF, function(tf) {
+  generateMotifLogo(tf, proj_motif5, "motif_logos")
+})
+
+# Trim motif names for display *after* logo generation
+top_motifs_HMvT_E$TF_display <- sub("_\\d+$", "", top_motifs_HMvT_E$TF)
+
+# Check logo paths and existence
+print("Logo paths:")
+print(top_motifs_HMvT_E$logo_path)
+print("Files exist:")
+logo_exists <- sapply(top_motifs_HMvT_E$logo_path, function(x) is.character(x) && nzchar(x) && file.exists(x))
+print(logo_exists)
+cat("Generated logo files:\n")
+print(list.files("motif_logos", pattern = "*.png", full.names = TRUE))
+
+# Create and save plot
+dotmotifenrich_HMvT_Enriched_Updated <- ggplot(top_motifs_HMvT_E, 
+                                              aes(x = mlog10Padj, y = reorder(TF_display, mlog10Padj))) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  { if (any(logo_exists)) 
+      geom_image(aes(x = 100, y = reorder(TF_display, mlog10Padj), image = logo_path), 
+                 size = 0.1, nudge_y = 0.2, by = "height") } +
+  scale_x_continuous(limits = c(1, max(top_motifs_HMvT_E$mlog10Padj) * 1.1)) +
+  labs(
+    x = "-log10(P-adj)",
+    y = "Transcription Factor (Motif)",
+    title = "Top Enriched Motifs (Differential Hybrid-M vs. Tumor)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_text(size = 12)
+  )
+
+# Save plot
+pdf("dotmotifenrich_HMvT_Enriched_WithLogos.pdf", width = 8, height = 6)
+print(dotmotifenrich_HMvT_Enriched_Updated)
+dev.off()
+```
+# Plotting Hybrid-T vs. Tumor Enriched Motifs w/ Logos
+```{r}
+# Load required libraries
+library(ArchR)
+library(ggplot2)
+library(ggimage)
+library(ggseqlogo)
+library(TFBSTools)
+library(grid)
+library(dplyr)
+
+# Ensure MotifMatrix exists
+if (!"MotifMatrix" %in% getAvailableMatrices(proj_motif5)) {
+  cat("Adding motif annotations and generating MotifMatrix...\n")
+  proj_motif5 <- addMotifAnnotations(
+    ArchRProj = proj_motif5,
+    motifSet = "cisbp",
+    name = "Motif",
+    force = TRUE
+  )
+  proj_motif5 <- addDeviationsMatrix(
+    ArchRProj = proj_motif5,
+    matrixName = "MotifMatrix",
+    force = TRUE
+  )
+}
+
+# Verify MotifMatrix motifs
+cat("Available motifs in MotifMatrix:\n")
+motifs <- getFeatures(proj_motif5, useMatrix = "MotifMatrix")
+print(head(motifs))
+print(grep("Runx", motifs, value = TRUE))
+
+# Your existing code for marker features and motif enrichment
+markerTest_HTvT <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-T",
+  bgdGroups = "Tumor"
+)
+
+motifsUp_HTvT <- peakAnnoEnrichment(
+  seMarker = markerTest_HTvT,
+  ArchRProj = proj_motif5,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+)
+
+# Verify enriched motif names
+cat("Enriched motifs from peakAnnoEnrichment:\n")
+print(head(rownames(motifsUp_HTvT)))
+
+# Data frame for enriched motifs
+df_up_HTvT <- data.frame(
+  TF = rownames(motifsUp_HTvT),
+  mlog10Padj = assay(motifsUp_HTvT)[,1],
+  Direction = "Enriched"
+)
+
+# Sort and select top 10
+df_up_HTvT <- df_up_HTvT[order(df_up_HTvT$mlog10Padj, decreasing = TRUE), ]
+top10_up_HTvT <- head(df_up_HTvT, 10)
+top_motifs_HTvT_E <- top10_up_HTvT
+
+# Verify motif names
+cat("Top enriched motifs:\n")
+print(top_motifs_HTvT_E$TF)
+
+# Directory for motif logos
+dir.create("motif_logos", showWarnings = FALSE)
+
+# Function to convert PWMatrix to probability matrix
+PWMatrixToProbMatrix <- function(x){
+  if (class(x) != "PWMatrix") stop("x must be a TFBSTools::PWMatrix object")
+  m <- (exp(as(x, "matrix"))) * TFBSTools::bg(x)/sum(TFBSTools::bg(x))
+  m <- t(t(m)/colSums(m))
+  m
+}
+
+# Function to generate and save motif logos using ggseqlogo
+generateMotifLogo <- function(motif_name, archr_project, output_dir) {
+  cat("Attempting to process motif:", motif_name, "\n")
+  
+  # Get available motifs from MotifMatrix
+  motifs <- tryCatch({
+    getFeatures(archr_project, useMatrix = "MotifMatrix")
+  }, error = function(e) {
+    warning(paste("Failed to retrieve MotifMatrix features:", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motifs)) {
+    warning("No motifs found in MotifMatrix")
+    return(NULL)
+  }
+  
+  # Check for motif with deviations: or z: prefix
+  motif_in_matrix <- motif_name
+  if (!motif_name %in% motifs) {
+    prefixed_name <- paste0("deviations:", motif_name)
+    if (prefixed_name %in% motifs) {
+      cat("Found motif with deviations: prefix:", prefixed_name, "\n")
+      motif_in_matrix <- prefixed_name
+    } else {
+      prefixed_name <- paste0("z:", motif_name)
+      if (prefixed_name %in% motifs) {
+        cat("Found motif with z: prefix:", prefixed_name, "\n")
+        motif_in_matrix <- prefixed_name
+      } else {
+        warning(paste("Motif", motif_name, "not found in MotifMatrix. Available motifs:", paste(head(motifs), collapse = ", ")))
+        return(NULL)
+      }
+    }
+  }
+  
+  # Get motif PWMatrix from annotations (using raw motif name)
+  motif_pwm <- tryCatch({
+    motif_annotations <- getPeakAnnotation(archr_project, "Motif")$motifs
+    if (is.null(motif_annotations)) {
+      warning("Motif annotations not found")
+      return(NULL)
+    }
+    if (!motif_name %in% names(motif_annotations)) {
+      warning(paste("Motif", motif_name, "not found in annotations. Available annotations:", paste(head(names(motif_annotations)), collapse = ", ")))
+      return(NULL)
+    }
+    pwm <- motif_annotations[[motif_name]] # Get PWMatrix object
+    pwm
+  }, error = function(e) {
+    warning(paste("Failed to retrieve PWMatrix for", motif_name, ":", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motif_pwm)) {
+    warning(paste("No PWMatrix retrieved for", motif_name))
+    return(NULL)
+  }
+  
+  cat("PWMatrix retrieved for", motif_name, "\n")
+  
+  # Convert PWMatrix to probability matrix
+  tryCatch({
+    ppm <- PWMatrixToProbMatrix(motif_pwm)
+    cat("Probability matrix created for", motif_name, "\n")
+    
+    # Save logo as PNG using ggseqlogo
+    output_file <- file.path(output_dir, paste0(motif_name, "_logo.png"))
+    cat("Attempting to save logo to", output_file, "\n")
+    
+    logo_plot <- ggseqlogo(ppm, method = "bits")
+    ggsave(output_file, plot = logo_plot, width = 6, height = 3, dpi = 300)
+    
+    if (file.exists(output_file)) {
+      cat("Logo successfully created for", motif_name, "at", output_file, "\n")
+      return(output_file)
+    } else {
+      warning("Failed to create logo file for", motif_name)
+      return(NULL)
+    }
+  }, error = function(e) {
+    warning(paste("Failed to save logo for", motif_name, ":", e$message))
+    return(NULL)
+  })
+}
+
+# Generate logos using original motif names
+top_motifs_HTvT_E$logo_path <- sapply(top_motifs_HTvT_E$TF, function(tf) {
+  generateMotifLogo(tf, proj_motif5, "motif_logos")
+})
+
+# Trim motif names for display *after* logo generation
+top_motifs_HTvT_E$TF_display <- sub("_\\d+$", "", top_motifs_HTvT_E$TF)
+
+# Check logo paths and existence
+print("Logo paths:")
+print(top_motifs_HTvT_E$logo_path)
+print("Files exist:")
+logo_exists <- sapply(top_motifs_HTvT_E$logo_path, function(x) is.character(x) && nzchar(x) && file.exists(x))
+print(logo_exists)
+cat("Generated logo files:\n")
+print(list.files("motif_logos", pattern = "*.png", full.names = TRUE))
+
+# Create and save plot
+dotmotifenrich_HTvT_Enriched_Updated <- ggplot(top_motifs_HTvT_E, 
+                                              aes(x = mlog10Padj, y = reorder(TF_display, mlog10Padj))) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  { if (any(logo_exists)) 
+      geom_image(aes(x = 25, y = reorder(TF_display, mlog10Padj), image = logo_path), 
+                 size = 0.1, nudge_y = 0.2, by = "height") } +
+  scale_x_continuous(limits = c(1, max(top_motifs_HTvT_E$mlog10Padj) * 1.1)) +
+  labs(
+    x = "-log10(P-adj)",
+    y = "Transcription Factor (Motif)",
+    title = "Top Enriched Motifs (Differential Hybrid-T vs. Tumor)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_text(size = 12)
+  )
+
+# Save plot
+pdf("dotmotifenrich_HTvT_Enriched_WithLogos.pdf", width = 8, height = 6)
+print(dotmotifenrich_HTvT_Enriched_Updated)
+dev.off()
+```
+# Plotting Hybrid-T vs. Macrophage Enriched Motifs w/ Logos
+```{r}
+# Load required libraries
+library(ArchR)
+library(ggplot2)
+library(ggimage)
+library(ggseqlogo)
+library(TFBSTools)
+library(grid)
+library(dplyr)
+
+# Ensure MotifMatrix exists
+if (!"MotifMatrix" %in% getAvailableMatrices(proj_motif5)) {
+  cat("Adding motif annotations and generating MotifMatrix...\n")
+  proj_motif5 <- addMotifAnnotations(
+    ArchRProj = proj_motif5,
+    motifSet = "cisbp",
+    name = "Motif",
+    force = TRUE
+  )
+  proj_motif5 <- addDeviationsMatrix(
+    ArchRProj = proj_motif5,
+    matrixName = "MotifMatrix",
+    force = TRUE
+  )
+}
+
+# Verify MotifMatrix motifs
+cat("Available motifs in MotifMatrix:\n")
+motifs <- getFeatures(proj_motif5, useMatrix = "MotifMatrix")
+print(head(motifs))
+print(grep("Runx", motifs, value = TRUE))
+
+# Your existing code for marker features and motif enrichment
+markerTest_HTvM <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-T",
+  bgdGroups = "Macrophage"
+)
+
+motifsUp_HTvM <- peakAnnoEnrichment(
+  seMarker = markerTest_HTvM,
+  ArchRProj = proj_motif5,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+)
+
+# Verify enriched motif names
+cat("Enriched motifs from peakAnnoEnrichment:\n")
+print(head(rownames(motifsUp_HTvM)))
+
+# Data frame for enriched motifs
+df_up_HTvM <- data.frame(
+  TF = rownames(motifsUp_HTvM),
+  mlog10Padj = assay(motifsUp_HTvM)[,1],
+  Direction = "Enriched"
+)
+
+# Sort and select top 10
+df_up_HTvM <- df_up_HTvM[order(df_up_HTvM$mlog10Padj, decreasing = TRUE), ]
+top10_up_HTvM <- head(df_up_HTvM, 10)
+top_motifs_HTvM_E <- top10_up_HTvM
+
+# Verify motif names
+cat("Top enriched motifs:\n")
+print(top_motifs_HTvM_E$TF)
+
+# Directory for motif logos
+dir.create("motif_logos", showWarnings = FALSE)
+
+# Function to convert PWMatrix to probability matrix
+PWMatrixToProbMatrix <- function(x){
+  if (class(x) != "PWMatrix") stop("x must be a TFBSTools::PWMatrix object")
+  m <- (exp(as(x, "matrix"))) * TFBSTools::bg(x)/sum(TFBSTools::bg(x))
+  m <- t(t(m)/colSums(m))
+  m
+}
+
+# Function to generate and save motif logos using ggseqlogo
+generateMotifLogo <- function(motif_name, archr_project, output_dir) {
+  cat("Attempting to process motif:", motif_name, "\n")
+  
+  # Get available motifs from MotifMatrix
+  motifs <- tryCatch({
+    getFeatures(archr_project, useMatrix = "MotifMatrix")
+  }, error = function(e) {
+    warning(paste("Failed to retrieve MotifMatrix features:", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motifs)) {
+    warning("No motifs found in MotifMatrix")
+    return(NULL)
+  }
+  
+  # Check for motif with deviations: or z: prefix
+  motif_in_matrix <- motif_name
+  if (!motif_name %in% motifs) {
+    prefixed_name <- paste0("deviations:", motif_name)
+    if (prefixed_name %in% motifs) {
+      cat("Found motif with deviations: prefix:", prefixed_name, "\n")
+      motif_in_matrix <- prefixed_name
+    } else {
+      prefixed_name <- paste0("z:", motif_name)
+      if (prefixed_name %in% motifs) {
+        cat("Found motif with z: prefix:", prefixed_name, "\n")
+        motif_in_matrix <- prefixed_name
+      } else {
+        warning(paste("Motif", motif_name, "not found in MotifMatrix. Available motifs:", paste(head(motifs), collapse = ", ")))
+        return(NULL)
+      }
+    }
+  }
+  
+  # Get motif PWMatrix from annotations (using raw motif name)
+  motif_pwm <- tryCatch({
+    motif_annotations <- getPeakAnnotation(archr_project, "Motif")$motifs
+    if (is.null(motif_annotations)) {
+      warning("Motif annotations not found")
+      return(NULL)
+    }
+    if (!motif_name %in% names(motif_annotations)) {
+      warning(paste("Motif", motif_name, "not found in annotations. Available annotations:", paste(head(names(motif_annotations)), collapse = ", ")))
+      return(NULL)
+    }
+    pwm <- motif_annotations[[motif_name]] # Get PWMatrix object
+    pwm
+  }, error = function(e) {
+    warning(paste("Failed to retrieve PWMatrix for", motif_name, ":", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motif_pwm)) {
+    warning(paste("No PWMatrix retrieved for", motif_name))
+    return(NULL)
+  }
+  
+  cat("PWMatrix retrieved for", motif_name, "\n")
+  
+  # Convert PWMatrix to probability matrix
+  tryCatch({
+    ppm <- PWMatrixToProbMatrix(motif_pwm)
+    cat("Probability matrix created for", motif_name, "\n")
+    
+    # Save logo as PNG using ggseqlogo
+    output_file <- file.path(output_dir, paste0(motif_name, "_logo.png"))
+    cat("Attempting to save logo to", output_file, "\n")
+    
+    logo_plot <- ggseqlogo(ppm, method = "bits")
+    ggsave(output_file, plot = logo_plot, width = 6, height = 3, dpi = 300)
+    
+    if (file.exists(output_file)) {
+      cat("Logo successfully created for", motif_name, "at", output_file, "\n")
+      return(output_file)
+    } else {
+      warning("Failed to create logo file for", motif_name)
+      return(NULL)
+    }
+  }, error = function(e) {
+    warning(paste("Failed to save logo for", motif_name, ":", e$message))
+    return(NULL)
+  })
+}
+
+# Generate logos using original motif names
+top_motifs_HTvM_E$logo_path <- sapply(top_motifs_HTvM_E$TF, function(tf) {
+  generateMotifLogo(tf, proj_motif5, "motif_logos")
+})
+
+# Trim motif names for display *after* logo generation
+top_motifs_HTvM_E$TF_display <- sub("_\\d+$", "", top_motifs_HTvM_E$TF)
+
+# Check logo paths and existence
+print("Logo paths:")
+print(top_motifs_HTvM_E$logo_path)
+print("Files exist:")
+logo_exists <- sapply(top_motifs_HTvM_E$logo_path, function(x) is.character(x) && nzchar(x) && file.exists(x))
+print(logo_exists)
+cat("Generated logo files:\n")
+print(list.files("motif_logos", pattern = "*.png", full.names = TRUE))
+
+# Create and save plot
+dotmotifenrich_HTvM_Enriched_Updated <- ggplot(top_motifs_HTvM_E, 
+                                              aes(x = mlog10Padj, y = reorder(TF_display, mlog10Padj))) +
+  geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+  { if (any(logo_exists)) 
+      geom_image(aes(x = 25, y = reorder(TF_display, mlog10Padj), image = logo_path), 
+                 size = 0.1, nudge_y = 0.2, by = "height") } +
+  scale_x_continuous(limits = c(1, max(top_motifs_HTvM_E$mlog10Padj) * 1.1)) +
+  labs(
+    x = "-log10(P-adj)",
+    y = "Transcription Factor (Motif)",
+    title = "Top Enriched Motifs (Differential Hybrid-T vs. Macrophage)"
+  ) +
+  scale_color_gradientn(colors = c("blue", "purple", "red")) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_text(size = 12)
+  )
+
+# Save plot
+pdf("dotmotifenrich_HTvM_Enriched_WithLogos.pdf", width = 8, height = 6)
+print(dotmotifenrich_HTvM_Enriched_Updated)
+dev.off()
+```
+
+# 250521: Combined plots for Hybrids-M/T vs. All
+```{r}
+# Hybrid-M vs all
+markerTest_HM_vsAll <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-M"
+)
+
+# Hybrid-T vs all
+markerTest_HT_vsAll <- getMarkerFeatures(
+  ArchRProj = proj_motif5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters_TuMerged",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Hybrid-T"
+)
+
+# Save Annotated Enrichments
+motifsUp_HM <- peakAnnoEnrichment(
+  seMarker = markerTest_HM_vsAll,
+  ArchRProj = proj_motif5,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+)
+
+motifsUp_HT <- peakAnnoEnrichment(
+  seMarker = markerTest_HT_vsAll,
+  ArchRProj = proj_motif5,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+)
+
+# Prepare data frames of top 10 motifs for each
+getTopMotifsDF <- function(motif_enrichment, label) {
+  df <- data.frame(
+    TF = rownames(motif_enrichment),
+    mlog10Padj = assay(motif_enrichment)[,1],
+    Direction = label
+  )
+  df <- df[order(df$mlog10Padj, decreasing = TRUE), ]
+  head(df, 10)
+}
+
+top_HM <- getTopMotifsDF(motifsUp_HM, "Hybrid-M")
+top_HT <- getTopMotifsDF(motifsUp_HT, "Hybrid-T")
+
+# Function to generate and save motif logos using ggseqlogo
+generateMotifLogo <- function(motif_name, archr_project, output_dir) {
+  cat("Attempting to process motif:", motif_name, "\n")
+  
+  # Get available motifs from MotifMatrix
+  motifs <- tryCatch({
+    getFeatures(archr_project, useMatrix = "MotifMatrix")
+  }, error = function(e) {
+    warning(paste("Failed to retrieve MotifMatrix features:", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motifs)) {
+    warning("No motifs found in MotifMatrix")
+    return(NULL)
+  }
+  
+  # Check for motif with deviations: or z: prefix
+  motif_in_matrix <- motif_name
+  if (!motif_name %in% motifs) {
+    prefixed_name <- paste0("deviations:", motif_name)
+    if (prefixed_name %in% motifs) {
+      cat("Found motif with deviations: prefix:", prefixed_name, "\n")
+      motif_in_matrix <- prefixed_name
+    } else {
+      prefixed_name <- paste0("z:", motif_name)
+      if (prefixed_name %in% motifs) {
+        cat("Found motif with z: prefix:", prefixed_name, "\n")
+        motif_in_matrix <- prefixed_name
+      } else {
+        warning(paste("Motif", motif_name, "not found in MotifMatrix. Available motifs:", paste(head(motifs), collapse = ", ")))
+        return(NULL)
+      }
+    }
+  }
+  
+  # Get motif PWMatrix from annotations (using raw motif name)
+  motif_pwm <- tryCatch({
+    motif_annotations <- getPeakAnnotation(archr_project, "Motif")$motifs
+    if (is.null(motif_annotations)) {
+      warning("Motif annotations not found")
+      return(NULL)
+    }
+    if (!motif_name %in% names(motif_annotations)) {
+      warning(paste("Motif", motif_name, "not found in annotations. Available annotations:", paste(head(names(motif_annotations)), collapse = ", ")))
+      return(NULL)
+    }
+    pwm <- motif_annotations[[motif_name]] # Get PWMatrix object
+    pwm
+  }, error = function(e) {
+    warning(paste("Failed to retrieve PWMatrix for", motif_name, ":", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motif_pwm)) {
+    warning(paste("No PWMatrix retrieved for", motif_name))
+    return(NULL)
+  }
+  
+  cat("PWMatrix retrieved for", motif_name, "\n")
+  
+  # Convert PWMatrix to probability matrix
+  tryCatch({
+    ppm <- PWMatrixToProbMatrix(motif_pwm)
+    cat("Probability matrix created for", motif_name, "\n")
+    
+    # Save logo as PNG using ggseqlogo
+    output_file <- file.path(output_dir, paste0(motif_name, "_logo.png"))
+    cat("Attempting to save logo to", output_file, "\n")
+    
+    logo_plot <- ggseqlogo(ppm, method = "bits")
+    ggsave(output_file, plot = logo_plot, width = 6, height = 3, dpi = 300)
+    
+    if (file.exists(output_file)) {
+      cat("Logo successfully created for", motif_name, "at", output_file, "\n")
+      return(output_file)
+    } else {
+      warning("Failed to create logo file for", motif_name)
+      return(NULL)
+    }
+  }, error = function(e) {
+    warning(paste("Failed to save logo for", motif_name, ":", e$message))
+    return(NULL)
+  })
+}
+
+
+#Apply existing Motif Logo function
+top_HM$logo_path <- sapply(top_HM$TF, function(tf) generateMotifLogo(tf, proj_motif5, "motif_logos"))
+top_HT$logo_path <- sapply(top_HT$TF, function(tf) generateMotifLogo(tf, proj_motif5, "motif_logos"))
+
+top_HM$TF_display <- sub("_\\d+$", "", top_HM$TF)
+top_HT$TF_display <- sub("_\\d+$", "", top_HT$TF)
+
+#Plot it
+plotMotifEnrichment <- function(df, title, filename) {
+  logo_exists <- sapply(df$logo_path, function(x) is.character(x) && nzchar(x) && file.exists(x))
+  
+  p <- ggplot(df, aes(x = mlog10Padj, y = reorder(TF_display, mlog10Padj))) +
+    geom_point(aes(size = mlog10Padj, color = mlog10Padj)) +
+    { if (any(logo_exists)) 
+        geom_image(aes(x = 1.5, y = reorder(TF_display, mlog10Padj), image = logo_path), 
+                   size = 0.1, nudge_y = 0.2, by = "height") } +
+    scale_x_continuous(limits = c(1, max(df$mlog10Padj) * 1.1)) +
+    labs(
+      x = "-log10(P-adj)",
+      y = "Transcription Factor (Motif)",
+      title = title
+    ) +
+    scale_color_gradientn(colors = c("blue", "purple", "red")) +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(size = 10),
+      axis.text.x = element_text(size = 10),
+      plot.title = element_text(hjust = 0.5),
+      axis.title.y = element_text(size = 12)
+    )
+  
+  pdf(filename, width = 8, height = 6)
+  print(p)
+  dev.off()
+}
+#Generate Plots
+plotMotifEnrichment(top_HM, "Top Enriched Motifs: Hybrid-M vs All", "HybridM_vs_All_MotifEnrichment.pdf")
+plotMotifEnrichment(top_HT, "Top Enriched Motifs: Hybrid-T vs All", "HybridT_vs_All_MotifEnrichment.pdf")
+
+
+```
+
+
+
+
+# Generating Only Logos
+```{r}
+# Load required libraries
+library(ArchR)
+library(TFBSTools)
+library(grid)
+library(dplyr)
+
+# Directory for motif logos
+dir.create("motif_logos", showWarnings = FALSE)
+
+# Function to generate and save motif logos
+generateMotifLogo <- function(motif_name, archr_project, output_dir) {
+  cat("Attempting to process motif:", motif_name, "\n")
+  
+  # Get available motifs from MotifMatrix
+  motifs <- tryCatch({
+    getFeatures(archr_project, useMatrix = "MotifMatrix")
+  }, error = function(e) {
+    warning(paste("Failed to retrieve MotifMatrix features:", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motifs)) {
+    warning("No motifs found in MotifMatrix")
+    return(NULL)
+  }
+  
+  # Check for motif with deviations: or z: prefix
+  motif_in_matrix <- motif_name
+  if (!motif_name %in% motifs) {
+    prefixed_name <- paste0("deviations:", motif_name)
+    if (prefixed_name %in% motifs) {
+      cat("Found motif with deviations: prefix:", prefixed_name, "\n")
+      motif_in_matrix <- prefixed_name
+    } else {
+      prefixed_name <- paste0("z:", motif_name)
+      if (prefixed_name %in% motifs) {
+        cat("Found motif with z: prefix:", prefixed_name, "\n")
+        motif_in_matrix <- prefixed_name
+      } else {
+        warning(paste("Motif", motif_name, "not found in MotifMatrix. Available motifs:", paste(head(motifs), collapse = ", ")))
+        return(NULL)
+      }
+    }
+  }
+  
+  # Get motif PWM from annotations (using raw motif name)
+  motif_pwm <- tryCatch({
+    motif_annotations <- getPeakAnnotation(archr_project, "Motif")$motifs
+    if (is.null(motif_annotations)) {
+      warning("Motif annotations not found")
+      return(NULL)
+    }
+    if (!motif_name %in% names(motif_annotations)) {
+      warning(paste("Motif", motif_name, "not found in annotations. Available annotations:", paste(head(names(motif_annotations)), collapse = ", ")))
+      return(NULL)
+    }
+    pwm <- motif_annotations[[motif_name]]@profileMatrix
+    pwm
+  }, error = function(e) {
+    warning(paste("Failed to retrieve PWM for", motif_name, ":", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(motif_pwm)) {
+    warning(paste("No PWM retrieved for", motif_name))
+    return(NULL)
+  }
+  
+  cat("PWM retrieved for", motif_name, "\n")
+  
+  # Ensure PWM is a matrix
+  pwm_matrix <- as.matrix(motif_pwm)
+  
+  # Save logo as PNG
+  output_file <- file.path(output_dir, paste0(motif_name, "_logo.png"))
+  cat("Attempting to save logo to", output_file, "\n")
+  
+  tryCatch({
+    png(output_file, width = 400, height = 200)
+    TFBSTools::seqLogo(pwm_matrix) # Explicitly use TFBSTools::seqLogo with raw matrix
+    dev.off()
+    
+    if (file.exists(output_file)) {
+      cat("Logo successfully created for", motif_name, "at", output_file, "\n")
+      return(output_file)
+    } else {
+      warning("Failed to create logo file for", motif_name)
+      return(NULL)
+    }
+  }, error = function(e) {
+    warning(paste("Failed to save logo for", motif_name, ":", e$message))
+    return(NULL)
+  })
+}
+
+# Generate logos for top 10 enriched motifs
+cat("Generating logos for top 10 enriched motifs...\n")
+logo_paths <- sapply(top_motifs_HMvM_E$TF, function(tf) {
+  generateMotifLogo(tf, proj_motif5, "motif_logos")
+})
+
+# Create a data frame to summarize results
+logo_results <- data.frame(
+  TF = top_motifs_HMvM_E$TF,
+  Logo_Path = unlist(logo_paths),
+  Logo_Created = sapply(logo_paths, function(x) is.character(x) && nzchar(x) && file.exists(x))
+)
+
+# Print results
+print("Logo generation results:")
+print(logo_results)
+
+# List all generated PNG files
+cat("Generated logo files:\n")
+print(list.files("motif_logos", pattern = "*.png", full.names = TRUE))
+```
+
+```{r}
+motifsDo <- peakAnnoEnrichment(
+    seMarker = markerTest,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC <= -0.5"
+  )
+
+motifsDo
+```
+
+```{r}
+df <- data.frame(TF = rownames(motifsDo), mlog10Padj = assay(motifsDo)[,1])
+df <- df[order(df$mlog10Padj, decreasing = TRUE),]
+df$rank <- seq_len(nrow(df))
+
+ggDo <- ggplot(df, aes(rank, mlog10Padj, color = mlog10Padj)) + 
+  geom_point(size = 1) +
+  ggrepel::geom_label_repel(
+        data = df[rev(seq_len(30)), ], aes(x = rank, y = mlog10Padj, label = TF), 
+        size = 1.5,
+        nudge_x = 2,
+        color = "black",
+        max.overlaps = 30  # Increase max.overlaps
+  ) + theme_ArchR() + 
+  ylab("-log10(FDR) Motif Enrichment") +
+  xlab("Rank Sorted TFs Enriched") +
+  scale_color_gradientn(colors = paletteContinuous(set = "comet"))
+
+ggDo
+```
+
+```{r}
+plotPDF(ggUp, ggDo, name = "C1-vs-C2-Markers-Motifs-Enriched", width = 10, height = 10, ArchRProj = proj_motif5, addDOC = FALSE)
+#no such index at level 2
+```
+
+#Motif Enrichment in Marker Peaks
+
+```{r}
+enrichMotifs <- peakAnnoEnrichment(
+    seMarker = markersPeaks,
+    ArchRProj = proj_motif5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+
+heatmapEM <- plotEnrichHeatmap(enrichMotifs, n = 10, transpose = TRUE)
+#N determiens the number of motifs
+
+ComplexHeatmap::draw(heatmapEM, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+
+plotPDF(heatmapEM, name = "Motifs-Enriched-Marker-Heatmap", width = 8, height = 6, ArchRProj = proj_motif5, addDOC = FALSE)
+```
+
+
+#Motif Footprinting
+```{r}
+motifPositions <- getPositions(proj_motif5)
+```
+```{r}
+motifPositions
+```
+```{r}
+motifs <- c("RUNX1")
+markerMotifs <- unlist(lapply(motifs, function(x) grep(x, names(motifPositions), value = TRUE)))
+markerMotifs <- markerMotifs[markerMotifs %ni% "SREBF1_22"]
+markerMotifs
+```
+```{r}
+proj_motif5 <- addGroupCoverages(ArchRProj = proj_motif5, groupBy = "Clusters_TuMerged")
+```
+```{r}
+seFoot <- getFootprints(
+  ArchRProj = proj_motif5, 
+  positions = motifPositions[markerMotifs], 
+  groupBy = "Clusters_TuMerged"
+)
+```
+#Subtract Tn5 Bias
+```{r}
+plotFootprints(
+  seFoot = seFoot,
+  ArchRProj = proj_motif5, 
+  normMethod = "Subtract",
+  plotName = "Footprints-Subtract-Bias",
+  addDOC = FALSE,
+  smoothWindow = 5
+)
+```
+#Divide by Tn5 Bias
+```{r}
+plotFootprints(
+  seFoot = seFoot,
+  ArchRProj = proj_motif5, 
+  normMethod = "Divide",
+  plotName = "Footprints-Divide-Bias",
+  addDOC = FALSE,
+  smoothWindow = 5
+)
+```
+
+
