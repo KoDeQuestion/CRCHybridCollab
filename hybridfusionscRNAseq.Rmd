@@ -1,0 +1,1083 @@
+---
+title: "cellfusionscRNAseq"
+author: "Ashley Anderson & Konstantin Quietsch"
+date: "2024-11-07"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#loading packages
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+set.seed(77892)
+```
+
+```{r}
+#Load the datasets
+tumor.data <- Read10X(data.dir = "~/Documents/2024-09-17_cellfusionscRNAseq/data/MC38/")
+
+macrophage.data <- Read10X(data.dir = "~/Documents/2024-09-17_cellfusionscRNAseq/data/Macrophage/")
+
+hybrid.m.data <- Read10X(data.dir = "~/Documents/2024-09-17_cellfusionscRNAseq/data/HFF/")
+
+hybrid.t.data <- Read10X(data.dir = "~/Documents/2024-09-17_cellfusionscRNAseq/data/HFP/")
+
+
+
+#Initialize the Seurat object with the raw (non-normalized data).
+tumor <- CreateSeuratObject(counts = tumor.data, project = "Tumor", min.cells = 3, min.features = 200)
+tumor
+
+mac <- CreateSeuratObject(counts = macrophage.data, project = "Macrophage", min.cells = 3, min.features = 200)
+mac
+
+hybrid.m <- CreateSeuratObject(counts = hybrid.m.data, project = "Hybrid-M", min.cells = 3, min.features = 200)
+hybrid.m
+
+hybrid.t <- CreateSeuratObject(counts = hybrid.t.data, project = "Hybrid-T", min.cells = 3, min.features = 200)
+hybrid.t
+
+
+```
+
+#merge all seurat objects into one 
+```{r}
+allcells3 <- merge(tumor, y = list(mac, hybrid.m, hybrid.t), add.cell.ids = c('Tumor', 'Mac', 'Hybrid-M', 'Hybrid-T'), project = "allcells3")
+allcells3
+
+head(colnames(allcells3))
+tail(colnames(allcells3))
+unique(sapply(X = strsplit(colnames(allcells3), split = "_"), FUN = "[", 1))
+table(allcells3$orig.ident)
+
+saveRDS(allcells3, file = "HybridM-HybridT-scRNAseq-Sept2024-v4-new.RDS")
+```
+
+
+#QC and selecting cells for analysis
+```{r}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+allcells3[["percent.mt"]] <- PercentageFeatureSet(allcells3, pattern = "^mt-")
+
+# Visualize QC metrics as a violin plot
+VlnPlot(allcells3, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+mt <- VlnPlot(allcells3, "percent.mt")
+mt + geom_hline(yintercept = 12.5, color = "red", linetype = "dashed")
+
+nfeature <- VlnPlot(allcells3, "nFeature_RNA")
+nfeature + geom_hline(yintercept = 600, color = "red", linetype = "dashed")
+
+allcells3 <- subset(allcells3, subset = nFeature_RNA > 600 & percent.mt < 12.5)
+```
+
+
+```{r}
+allcells3 <- NormalizeData(allcells3, normalization.method = "LogNormalize", scale.factor = 10000)
+allcells3 <- FindVariableFeatures(allcells3, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(allcells3)
+allcells3 <- ScaleData(allcells3, features = all.genes)
+allcells3 <- RunPCA(allcells3, features = VariableFeatures(object = allcells3))
+ElbowPlot(allcells3)
+allcells3 <- FindNeighbors(allcells3, dims = 1:10)
+allcells3 <- FindClusters(allcells3, resolution = 0.5)
+head(Idents(allcells3), 5)
+allcells3 <- RunUMAP(allcells3, dims = 1:10)
+DimPlot(allcells3, reduction = "umap", pt.size=1)
+
+DimPlot(allcells3, group.by = 'orig.ident', pt.size = 1, cols = c("blue4", "red3", "cadetblue3", "gray45", "gold")) +
+  theme(element_text(size = 20))
+
+```
+
+
+#finding differentially expressed features 
+```{r}
+# install presto for faster implementation of wilcoxon rank sum test 
+
+install.packages('devtools')
+devtools::install_github('immunogenomics/presto')
+
+allcells3 <- JoinLayers(allcells3)
+
+# find all markers for each individual cluster 0-11
+allcells3.cluster0.markers <- FindMarkers(allcells3, ident.1 = 0, min.pct = 0.25)
+head(allcells3.cluster0.markers, n = 20)
+write.csv(allcells3.cluster0.markers, file = "cluster0_tumor_markers")
+View(allcells3.cluster0.markers)
+
+allcells3.cluster1.markers <- FindMarkers(allcells3, ident.1 = 1, min.pct = 0.25)
+write.csv(allcells3.cluster1.markers, file = "cluster1_mac_markers")
+head(allcells3.cluster1.markers, n = 20)
+
+
+allcells3.cluster4.markers <- FindMarkers(allcells3, ident.1 = 2, min.pct = 0.25)
+write.csv(allcells3.cluster4.markers, file = "cluster4_hybrid.t_markers")
+head(allcells3.cluster4.markers, n = 20)
+
+
+allcells3.cluster3.markers <- FindMarkers(allcells3, ident.1 = 3, min.pct = 0.25)
+write.csv(allcells3.cluster3.markers, file = "cluster3_hybrid.t_markers")
+head(allcells3.cluster3.markers, n = 20)
+
+
+allcells3.cluster4.markers <- FindMarkers(allcells3, ident.1 = 4, min.pct = 0.25)
+write.csv(allcells3.cluster4.markers, file = "cluster4_tumor_markers")
+head(allcells3.cluster4.markers, n = 20)
+
+
+allcells3.cluster5.markers <- FindMarkers(allcells3, ident.1 = 5, min.pct = 0.25)
+write.csv(allcells3.cluster5.markers, file = "cluster5_hybrid.t_markers")
+head(allcells3.cluster5.markers, n = 20)
+
+
+allcells3.cluster6.markers <- FindMarkers(allcells3, ident.1 = 6, min.pct = 0.25)
+write.csv(allcells3.cluster6.markers, file = "cluster6_mac_markers")
+head(allcells3.cluster6.markers, n = 20)
+
+
+allcells3.cluster7.markers <- FindMarkers(allcells3, ident.1 = 7, min.pct = 0.25)
+write.csv(allcells3.cluster7.markers, file = "cluster7_hybrid.m_markers")
+head(allcells3.cluster7.markers, n = 20)
+
+
+allcells3.cluster8.markers <- FindMarkers(allcells3, ident.1 = 8, min.pct = 0.25)
+write.csv(allcells3.cluster8.markers, file = "cluster8_tumor_markers")
+head(allcells3.cluster8.markers, n = 20)
+
+
+allcells3.cluster9.markers <- FindMarkers(allcells3, ident.1 = 9, min.pct = 0.25)
+write.csv(allcells3.cluster9.markers, file = "cluster9_hybrid.m_markers")
+head(allcells3.cluster9.markers, n = 20) 
+
+allcells3.cluster10.markers <- FindMarkers(allcells3, ident.1 = 10, min.pct = 0.25)
+write.csv(allcells3.cluster9.markers, file = "cluster10_hybrid.m_markers")
+head(allcells3.cluster9.markers, n = 20) 
+
+allcells3.cluster11.markers <- FindMarkers(allcells3, ident.1 = 11, min.pct = 0.25)
+write.csv(allcells3.cluster9.markers, file = "cluster11_tumor-hybrid.t-mix_markers")
+head(allcells3.cluster9.markers, n = 20) 
+
+
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+allcells3.markers <- FindAllMarkers(allcells3, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+allcells3.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+write.csv(allcells3.markers, file = "allcells3_pos_markers")
+
+allcells3.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(allcells3, features = top10$gene) + NoLegend()
+```
+
+
+#specific plots for genes of interest
+```{r}
+FeaturePlot(allcells3, features = c("Runx1", "Thbs1", "Spi1", "Grn", "Pf4", "Lgals3"))
+
+FeaturePlot(allcells3, features = c('Cd163'))
+
+FeaturePlot(allcells3, features = c('B2m', 'S100a11','Tmsb10'))
+
+FeaturePlot(allcells3, features = c('Ptprc'))
+FeaturePlot(allcells3, features = c('Adgre1'))
+FeaturePlot(allcells3, features = c('Cd14'))
+
+FeaturePlot(allcells3, features = c('Tob2'))
+
+#M1
+FeaturePlot(allcells3, features = c("Fcgr3", "Cd86", "Nos2", "Il6"))
+VlnPlot(allcells3, features = c('Fcgr3'), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c('Cd86'), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c('Nos2'), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c('Il6'), group.by = 'orig.ident')
+
+#M2
+FeaturePlot(allcells3, features = c("Retnlb", "Mrc1", "Arg1", "Ccl2", "Clec7a", "Chil3", "Chil4"))
+VlnPlot(allcells3, features = c("Retnlb"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Mrc1"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Arg1"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Ccl2"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Clec7a"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Chil3"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Chil4"), group.by = 'orig.ident')
+
+
+VlnPlot(allcells3, features = c("Lgals3"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Runx1"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Spi1"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Grn"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Pf4"), group.by = 'orig.ident')
+VlnPlot(allcells3, features = c("Thbs1"), group.by = 'orig.ident')
+
+
+FeaturePlot(allcells3, features = c('Runx1'), pt.size = 1, alpha = 0.7)
+FeaturePlot(allcells3, features = c('Thbs1'), pt.size = 1)
+
+FeaturePlot(allcells3, features = c('Mmp8'))
+FeaturePlot(allcells3, features = c('Mmp9'))
+FeaturePlot(allcells3, features = c('Mmp10'))
+FeaturePlot(allcells3, features = c('Col1a1'))
+FeaturePlot(allcells3, features = c('Fn1'))
+FeaturePlot(allcells3, features = c('Vim'))
+FeaturePlot(allcells3, features = c('Elk3'))
+FeaturePlot(allcells3, features = c('Ptgs2'))
+FeaturePlot(allcells3, features = c('Tgfb1'))
+
+
+FeaturePlot(allcells3, features = c("Ki67", "Pcna"))
+
+FeaturePlot(allcells3, features = c("Muc1", "Muc5ac", "Epcam", "Egfr", "Cdh1", "Krt8", "Krt5", "Krt14", "Krt19", "Krt9", "Krt7", "Krt18", "Krt10"), ncol = 2)
+
+FeaturePlot(allcells3, features = c("Satb", "Cldn1", "Muc4"))
+
+FeaturePlot(allcells3, features = c("Vim", "Snai1", "Tgfb1", "Cdh2", "Zeb1", "Zeb2", "Timp1", "Fn1", "Acta2"), ncol=2)
+
+FeaturePlot(allcells3, features = c("Ptprc", "Cd68", "Cd14","Fcgr3", "Adgre1", "Itgax" , "Csf1r"))
+#note Fcgr3 = CD16 and Ptprc = CD45
+
+FeaturePlot(allcells3, features = c("Cd44", "Cdx2", "Cdx1", "Tead4", "Alcam"))
+FeaturePlot(allcells3, features = c("Mapk14", "Cdkn2a", "Mapk1", "Cdkn1a", "Yap1", "Trp53"))
+#note Mapk14 = p38, Cdkn2a = p16, mapk1 = Erk, cdkn1a = p21, 
+
+FeaturePlot(allcells3, features = c("Pdcd1", "Cd274"))
+#note Pdcd1 = PD1 and CD274 = PDL1
+
+FeaturePlot(allcells3, features = c("Cd47"))
+
+FeaturePlot(allcells3, features = c("Hur"))
+
+FeaturePlot(allcells3, features = c("Ctsk", "Ctsb", "Ctsl", "Ctsd", "Ctss", "Ctsc", "Ctsg", "Ctse", "Ctsz", "Ctsa", "Ctsh", "Ctsq", "Ctsj"))
+
+FeaturePlot(allcells3, features = c("Gap1"))
+
+FeaturePlot(allcells3, features = c("Ccl3", "Il1b", "Cxcr4", "Mmp1", "B2m"))
+
+FeaturePlot(allcells3, features = c("Spp1", "Cxcl9", "Il1a"))
+
+FeaturePlot(allcells3, features = c("Cstb"))
+
+FeaturePlot(allcells3, features = c("Mmp1", "Mmp2", "Mmp3", "Mmp4", "Mmp5", "Mmp6", "Mmp7", "Mmp8", "Mmp9", "Mmp10", "Mmp11", "Mmp12", "Mmp13", "Mmp14"))
+
+##look at genes that cleave MMPs 
+
+
+FeaturePlot(allcells3, features = c("Tm4sf1", "Twist1", "Steap1", "Cdh18", "Dclk1", "Tead2", "Ddr2"))
+
+#hybrid gene signature feature plots 
+FeaturePlot(allcells3, features = c("Crabp1", "Arg1", "Ctla2a", "Thbs1", "Ccr1", "Pf4", "Ccl6"))
+
+FeaturePlot(allcells3, features = c("Sorbs2"))
+
+FeaturePlot(allcells3, features = c("Spp1"))
+
+
+```
+
+
+#GSEA
+```{r}
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(DOSE)
+library(fgsea)
+library(enrichplot)
+```
+
+#cluster 0
+```{r}
+allcells3.cluster0.markers$gene <- rownames(allcells3.cluster0.markers)
+allcells3.cluster0.markers <- allcells3.cluster0.markers %>% arrange(desc(avg_log2FC))
+cluster0_foldchange <- allcells3.cluster0.markers$avg_log2FC
+names(cluster0_foldchange) <- allcells3.cluster0.markers$gene
+
+head(cluster0_foldchange)
+
+cluster0_foldchange.df <- as.data.frame(cluster0_foldchange)
+
+cluster0_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster0_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster0_enslist <- na.omit(cluster0_foldchange.df)
+
+cluster0_enslist <- cluster0_foldchange.df$cluster0_foldchange
+names(cluster0_enslist) <- cluster0_foldchange.df$ENSEMBL
+cluster0_enslist
+
+View(cluster0_enslist)
+
+gse.cluster0 <- gseGO(cluster0_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster0.df <- as.data.frame(gse.cluster0)
+
+write.csv(gse.cluster0.df, file = "gse.cluster0.csv")
+
+require(DOSE)
+dotplot0 <- dotplot(gse.cluster0, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot0
+
+ggsave(filename = "gse.dotplot.cluster0.tiff", plot = dotplot0, width = 7, height = 6, dpi = 600)
+```
+
+#cluster 1
+```{r}
+allcells3.cluster1.markers$gene <- rownames(allcells3.cluster1.markers)
+allcells3.cluster1.markers <- allcells3.cluster1.markers %>% arrange(desc(avg_log2FC))
+cluster1_foldchange <- allcells3.cluster1.markers$avg_log2FC
+names(cluster1_foldchange) <- allcells3.cluster1.markers$gene
+
+head(cluster1_foldchange)
+
+cluster1_foldchange.df <- as.data.frame(cluster1_foldchange)
+
+cluster1_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster1_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster1_enslist <- na.omit(cluster1_foldchange.df)
+
+cluster1_enslist <- cluster1_foldchange.df$cluster1_foldchange
+names(cluster1_enslist) <- cluster1_foldchange.df$ENSEMBL
+cluster1_enslist
+
+View(cluster1_enslist)
+
+gse.cluster1 <- gseGO(cluster1_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster1.df <- as.data.frame(gse.cluster1)
+
+write.csv(gse.cluster1.df, file = "gse.cluster1.csv")
+
+require(DOSE)
+dotplot1 <- dotplot(gse.cluster1, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot1
+
+ggsave(filename = "gse.dotplot.cluster1.tiff", plot = dotplot1, width = 7, height = 6, dpi = 600)
+```
+
+#cluster2 
+```{r}
+allcells3.cluster2.markers$gene <- rownames(allcells3.cluster2.markers)
+allcells3.cluster2.markers <- allcells3.cluster2.markers %>% arrange(desc(avg_log2FC))
+cluster2_foldchange <- allcells3.cluster2.markers$avg_log2FC
+names(cluster2_foldchange) <- allcells3.cluster2.markers$gene
+
+head(cluster2_foldchange)
+
+cluster2_foldchange.df <- as.data.frame(cluster2_foldchange)
+
+cluster2_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster2_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster2_enslist <- na.omit(cluster2_foldchange.df)
+
+cluster2_enslist <- cluster2_foldchange.df$cluster2_foldchange
+names(cluster2_enslist) <- cluster2_foldchange.df$ENSEMBL
+cluster2_enslist
+
+View(cluster2_enslist)
+
+gse.cluster2 <- gseGO(cluster2_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster2.df <- as.data.frame(gse.cluster2)
+
+write.csv(gse.cluster2.df, file = "gse.cluster2.csv")
+
+require(DOSE)
+dotplot2 <- dotplot(gse.cluster2, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot2
+
+ggsave(filename = "gse.dotplot.cluster2.tiff", plot = dotplot2, width = 7, height = 6, dpi = 600)
+```
+
+
+#cluster3 
+```{r}
+allcells3.cluster3.markers$gene <- rownames(allcells3.cluster3.markers)
+allcells3.cluster3.markers <- allcells3.cluster3.markers %>% arrange(desc(avg_log2FC))
+cluster3_foldchange <- allcells3.cluster3.markers$avg_log2FC
+names(cluster3_foldchange) <- allcells3.cluster3.markers$gene
+
+head(cluster3_foldchange)
+
+cluster3_foldchange.df <- as.data.frame(cluster3_foldchange)
+
+cluster3_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster3_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster3_enslist <- na.omit(cluster3_foldchange.df)
+
+cluster3_enslist <- cluster3_foldchange.df$cluster3_foldchange
+names(cluster3_enslist) <- cluster3_foldchange.df$ENSEMBL
+cluster3_enslist
+
+View(cluster3_enslist)
+
+gse.cluster3 <- gseGO(cluster3_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster3.df <- as.data.frame(gse.cluster3)
+
+write.csv(gse.cluster3.df, file = "gse.cluster3.csv")
+
+require(DOSE)
+dotplot3 <- dotplot(gse.cluster3, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot3
+
+ggsave(filename = "gse.dotplot.cluster3.tiff", plot = dotplot3, width = 7, height = 6, dpi = 600)
+```
+
+#cluster4 
+```{r}
+allcells3.cluster4.markers$gene <- rownames(allcells3.cluster4.markers)
+allcells3.cluster4.markers <- allcells3.cluster4.markers %>% arrange(desc(avg_log2FC))
+cluster4_foldchange <- allcells3.cluster4.markers$avg_log2FC
+names(cluster4_foldchange) <- allcells3.cluster4.markers$gene
+
+head(cluster4_foldchange)
+
+cluster4_foldchange.df <- as.data.frame(cluster4_foldchange)
+
+cluster4_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster4_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster4_enslist <- na.omit(cluster4_foldchange.df)
+
+cluster4_enslist <- cluster4_foldchange.df$cluster4_foldchange
+names(cluster4_enslist) <- cluster4_foldchange.df$ENSEMBL
+cluster4_enslist
+
+View(cluster4_enslist)
+
+gse.cluster4 <- gseGO(cluster4_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster4.df <- as.data.frame(gse.cluster4)
+
+write.csv(gse.cluster4.df, file = "gse.cluster4.csv")
+
+require(DOSE)
+dotplot4 <- dotplot(gse.cluster4, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot4
+
+ggsave(filename = "gse.dotplot.cluster4.tiff", plot = dotplot4, width = 7, height = 6, dpi = 600)
+```
+
+#cluster5 
+```{r}
+allcells3.cluster5.markers$gene <- rownames(allcells3.cluster5.markers)
+allcells3.cluster5.markers <- allcells3.cluster5.markers %>% arrange(desc(avg_log2FC))
+cluster5_foldchange <- allcells3.cluster5.markers$avg_log2FC
+names(cluster5_foldchange) <- allcells3.cluster5.markers$gene
+
+head(cluster5_foldchange)
+
+cluster5_foldchange.df <- as.data.frame(cluster5_foldchange)
+
+cluster5_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster5_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster5_enslist <- na.omit(cluster5_foldchange.df)
+
+cluster5_enslist <- cluster5_foldchange.df$cluster5_foldchange
+names(cluster5_enslist) <- cluster5_foldchange.df$ENSEMBL
+cluster5_enslist
+
+View(cluster5_enslist)
+
+gse.cluster5 <- gseGO(cluster5_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster5.df <- as.data.frame(gse.cluster5)
+
+write.csv(gse.cluster5.df, file = "gse.cluster5.csv")
+
+require(DOSE)
+dotplot5 <- dotplot(gse.cluster5, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot5
+
+ggsave(filename = "gse.dotplot.cluster5.tiff", plot = dotplot5, width = 7, height = 6, dpi = 600)
+```
+
+#cluster6 
+```{r}
+allcells3.cluster6.markers$gene <- rownames(allcells3.cluster6.markers)
+allcells3.cluster6.markers <- allcells3.cluster6.markers %>% arrange(desc(avg_log2FC))
+cluster6_foldchange <- allcells3.cluster6.markers$avg_log2FC
+names(cluster6_foldchange) <- allcells3.cluster6.markers$gene
+
+head(cluster6_foldchange)
+
+cluster6_foldchange.df <- as.data.frame(cluster6_foldchange)
+
+cluster6_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster6_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster6_enslist <- na.omit(cluster6_foldchange.df)
+
+cluster6_enslist <- cluster6_foldchange.df$cluster6_foldchange
+names(cluster6_enslist) <- cluster6_foldchange.df$ENSEMBL
+cluster6_enslist
+
+View(cluster6_enslist)
+
+gse.cluster6 <- gseGO(cluster6_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster6.df <- as.data.frame(gse.cluster6)
+
+write.csv(gse.cluster6.df, file = "gse.cluster6.csv")
+
+require(DOSE)
+dotplot6 <- dotplot(gse.cluster6, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot6
+
+ggsave(filename = "gse.dotplot.cluster6.tiff", plot = dotplot6, width = 7, height = 6, dpi = 600)
+```
+
+#cluster7 
+```{r}
+allcells3.cluster7.markers$gene <- rownames(allcells3.cluster7.markers)
+allcells3.cluster7.markers <- allcells3.cluster7.markers %>% arrange(desc(avg_log2FC))
+cluster7_foldchange <- allcells3.cluster7.markers$avg_log2FC
+names(cluster7_foldchange) <- allcells3.cluster7.markers$gene
+
+head(cluster7_foldchange)
+
+cluster7_foldchange.df <- as.data.frame(cluster7_foldchange)
+
+cluster7_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster7_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster7_enslist <- na.omit(cluster7_foldchange.df)
+
+cluster7_enslist <- cluster7_foldchange.df$cluster7_foldchange
+names(cluster7_enslist) <- cluster7_foldchange.df$ENSEMBL
+cluster7_enslist
+
+View(cluster7_enslist)
+
+gse.cluster7 <- gseGO(cluster7_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster7.df <- as.data.frame(gse.cluster7)
+
+write.csv(gse.cluster7.df, file = "gse.cluster7.csv")
+
+require(DOSE)
+dotplot7 <- dotplot(gse.cluster7, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot7
+
+ggsave(filename = "gse.dotplot.cluster7.tiff", plot = dotplot7, width = 7, height = 6, dpi = 600)
+```
+
+#cluster8 
+```{r}
+allcells3.cluster8.markers$gene <- rownames(allcells3.cluster8.markers)
+allcells3.cluster8.markers <- allcells3.cluster8.markers %>% arrange(desc(avg_log2FC))
+cluster8_foldchange <- allcells3.cluster8.markers$avg_log2FC
+names(cluster8_foldchange) <- allcells3.cluster8.markers$gene
+
+head(cluster8_foldchange)
+
+cluster8_foldchange.df <- as.data.frame(cluster8_foldchange)
+
+cluster8_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster8_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster8_enslist <- na.omit(cluster8_foldchange.df)
+
+cluster8_enslist <- cluster8_foldchange.df$cluster8_foldchange
+names(cluster8_enslist) <- cluster8_foldchange.df$ENSEMBL
+cluster8_enslist
+
+View(cluster8_enslist)
+
+gse.cluster8 <- gseGO(cluster8_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster8.df <- as.data.frame(gse.cluster8)
+
+write.csv(gse.cluster8.df, file = "gse.cluster8.csv")
+
+require(DOSE)
+dotplot8 <- dotplot(gse.cluster8, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot8
+
+ggsave(filename = "gse.dotplot.cluster8.tiff", plot = dotplot8, width = 7, height = 6, dpi = 600)
+```
+
+#cluster9 
+```{r}
+allcells3.cluster9.markers$gene <- rownames(allcells3.cluster9.markers)
+allcells3.cluster9.markers <- allcells3.cluster9.markers %>% arrange(desc(avg_log2FC))
+cluster9_foldchange <- allcells3.cluster9.markers$avg_log2FC
+names(cluster9_foldchange) <- allcells3.cluster9.markers$gene
+
+head(cluster9_foldchange)
+
+cluster9_foldchange.df <- as.data.frame(cluster9_foldchange)
+
+cluster9_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster9_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster9_enslist <- na.omit(cluster9_foldchange.df)
+
+cluster9_enslist <- cluster9_foldchange.df$cluster9_foldchange
+names(cluster9_enslist) <- cluster9_foldchange.df$ENSEMBL
+cluster9_enslist
+
+View(cluster9_enslist)
+
+gse.cluster9 <- gseGO(cluster9_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster9.df <- as.data.frame(gse.cluster9)
+
+write.csv(gse.cluster9.df, file = "gse.cluster9.csv")
+
+require(DOSE)
+dotplot9 <- dotplot(gse.cluster9, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot9
+
+ggsave(filename = "gse.dotplot.cluster9.tiff", plot = dotplot9, width = 7, height = 6, dpi = 600)
+```
+
+
+#cluster10 
+```{r}
+allcells3.cluster10.markers$gene <- rownames(allcells3.cluster10.markers)
+allcells3.cluster10.markers <- allcells3.cluster10.markers %>% arrange(desc(avg_log2FC))
+cluster10_foldchange <- allcells3.cluster10.markers$avg_log2FC
+names(cluster10_foldchange) <- allcells3.cluster10.markers$gene
+
+head(cluster10_foldchange)
+
+cluster10_foldchange.df <- as.data.frame(cluster10_foldchange)
+
+cluster10_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster10_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster10_enslist <- na.omit(cluster10_foldchange.df)
+
+cluster10_enslist <- cluster10_foldchange.df$cluster10_foldchange
+names(cluster10_enslist) <- cluster10_foldchange.df$ENSEMBL
+cluster10_enslist
+
+View(cluster10_enslist)
+
+gse.cluster10 <- gseGO(cluster10_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster10.df <- as.data.frame(gse.cluster10)
+
+write.csv(gse.cluster10.df, file = "gse.cluster10.csv")
+
+require(DOSE)
+dotplot10 <- dotplot(gse.cluster10, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot10
+
+ggsave(filename = "gse.dotplot.cluster10.tiff", plot = dotplot10, width = 7, height = 6, dpi = 600)
+```
+
+#cluster11 
+```{r}
+allcells3.cluster11.markers$gene <- rownames(allcells3.cluster11.markers)
+allcells3.cluster11.markers <- allcells3.cluster11.markers %>% arrange(desc(avg_log2FC))
+cluster11_foldchange <- allcells3.cluster11.markers$avg_log2FC
+names(cluster11_foldchange) <- allcells3.cluster11.markers$gene
+
+head(cluster11_foldchange)
+
+cluster11_foldchange.df <- as.data.frame(cluster11_foldchange)
+
+cluster11_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(cluster11_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+cluster11_enslist <- na.omit(cluster11_foldchange.df)
+
+cluster11_enslist <- cluster11_foldchange.df$cluster11_foldchange
+names(cluster11_enslist) <- cluster11_foldchange.df$ENSEMBL
+cluster11_enslist
+
+View(cluster11_enslist)
+
+gse.cluster11 <- gseGO(cluster11_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.cluster11.df <- as.data.frame(gse.cluster11)
+
+write.csv(gse.cluster11.df, file = "gse.cluster11.csv")
+
+require(DOSE)
+dotplot11 <- dotplot(gse.cluster11, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplot11
+
+ggsave(filename = "gse.dotplot.cluster11.tiff", plot = dotplot11, width = 7, height = 6, dpi = 600)
+```
+
+
+#assign cluster IDs based on cell type 
+```{r}
+new.cluster.ids <- c('tumor', 'mac', 'hybrid.t', 'hybrid.t', 'tumor', 'hybrid.t', 'mac', 'hybrid.m', 'tumor', 'hybrid.m', 'hybrid.m', 'mixed')
+names(new.cluster.ids) <- levels(allcells3)
+allcells3_cellID <- RenameIdents(allcells3, new.cluster.ids)
+DimPlot(allcells3_cellID, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+```
+
+#run DEG and GSEA again with cluster id's relabled for each cell type 
+```{r}
+
+allcells3_cellID <- JoinLayers(allcells3_cellID)
+
+# find all markers for each cell type 
+allcells3.mac.markers <- FindMarkers(allcells3_cellID, ident.1 = 'mac', min.pct = 0.25)
+head(allcells3.mac.markers, n = 20)
+write.csv(allcells3.mac.markers, file = "mac_markers")
+View(allcells3.mac.markers)
+
+allcells3.tumor.markers <- FindMarkers(allcells3_cellID, ident.1 = 'tumor', min.pct = 0.25)
+head(allcells3.tumor.markers, n = 20)
+write.csv(allcells3.tumor.markers, file = "tumor_markers")
+View(allcells3.tumor.markers)
+
+allcells3.hybrid.t.markers <- FindMarkers(allcells3_cellID, ident.1 = 'hybrid.t', min.pct = 0.25)
+head(allcells3.hybrid.t.markers, n = 20)
+write.csv(allcells3.hybrid.t.markers, file = "hybrid.t_markers")
+View(allcells3.hybrid.t.markers)
+
+allcells3.hybrid.m.markers <- FindMarkers(allcells3_cellID, ident.1 = 'hybrid.m', min.pct = 0.25)
+head(allcells3.hybrid.m.markers, n = 20)
+write.csv(allcells3.hybrid.m.markers, file = "hybrid.m_markers")
+View(allcells3.hybrid.m.markers)
+```
+
+
+#mac GSEA
+```{r}
+allcells3.mac.markers$gene <- rownames(allcells3.mac.markers)
+allcells3.mac.markers <- allcells3.mac.markers %>% arrange(desc(avg_log2FC))
+mac_foldchange <- allcells3.mac.markers$avg_log2FC
+names(mac_foldchange) <- allcells3.mac.markers$gene
+
+head(mac_foldchange)
+
+mac_foldchange.df <- as.data.frame(mac_foldchange)
+
+mac_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(mac_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+mac_enslist <- na.omit(mac_foldchange.df)
+
+mac_enslist <- mac_foldchange.df$mac_foldchange
+names(mac_enslist) <- mac_foldchange.df$ENSEMBL
+mac_enslist
+
+View(mac_enslist)
+
+gse.mac <- gseGO(mac_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.mac.df <- as.data.frame(gse.mac)
+
+write.csv(gse.mac.df, file = "gse.mac.csv")
+
+require(DOSE)
+dotplotmac <- dotplot(gse.mac, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplotmac
+
+ggsave(filename = "gse.dotplot.mac.tiff", plot = dotplotmac, width = 7, height = 6, dpi = 600)
+```
+
+#tumor GSEA
+```{r}
+allcells3.tumor.markers$gene <- rownames(allcells3.tumor.markers)
+allcells3.tumor.markers <- allcells3.tumor.markers %>% arrange(desc(avg_log2FC))
+tumor_foldchange <- allcells3.tumor.markers$avg_log2FC
+names(tumor_foldchange) <- allcells3.tumor.markers$gene
+
+head(tumor_foldchange)
+
+tumor_foldchange.df <- as.data.frame(tumor_foldchange)
+
+tumor_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(tumor_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+tumor_enslist <- na.omit(tumor_foldchange.df)
+
+tumor_enslist <- tumor_foldchange.df$tumor_foldchange
+names(tumor_enslist) <- tumor_foldchange.df$ENSEMBL
+tumor_enslist
+
+View(tumor_enslist)
+
+gse.tumor <- gseGO(tumor_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.tumor.df <- as.data.frame(gse.tumor)
+
+write.csv(gse.tumor.df, file = "gse.tumor.csv")
+
+require(DOSE)
+dotplottumor <- dotplot(gse.tumor, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplottumor
+
+ggsave(filename = "gse.dotplot.tumor.tiff", plot = dotplottumor, width = 7, height = 6, dpi = 600)
+```
+
+
+#hybrid.t GSEA
+```{r}
+allcells3.hybrid.t.markers$gene <- rownames(allcells3.hybrid.t.markers)
+allcells3.hybrid.t.markers <- allcells3.hybrid.t.markers %>% arrange(desc(avg_log2FC))
+hybrid.t_foldchange <- allcells3.hybrid.t.markers$avg_log2FC
+names(hybrid.t_foldchange) <- allcells3.hybrid.t.markers$gene
+
+head(hybrid.t_foldchange)
+
+hybrid.t_foldchange.df <- as.data.frame(hybrid.t_foldchange)
+
+hybrid.t_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(hybrid.t_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+hybrid.t_enslist <- na.omit(hybrid.t_foldchange.df)
+
+hybrid.t_enslist <- hybrid.t_foldchange.df$hybrid.t_foldchange
+names(hybrid.t_enslist) <- hybrid.t_foldchange.df$ENSEMBL
+hybrid.t_enslist
+
+View(hybrid.t_enslist)
+
+gse.hybrid.t <- gseGO(hybrid.t_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300, maxGSSize = 200)
+
+gse.hybrid.t.df <- as.data.frame(gse.hybrid.t)
+
+write.csv(gse.hybrid.t.df, file = "gse.hybrid.t.csv")
+
+require(DOSE)
+dotplothybrid.t <- dotplot(gse.hybrid.t, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplothybrid.t
+
+ggsave(filename = "gse.dotplot.hybrid.t.tiff", plot = dotplothybrid.t, width = 7, height = 6, dpi = 600)
+```
+
+#hybrid.m GSEA
+```{r}
+allcells3.hybrid.m.markers$gene <- rownames(allcells3.hybrid.m.markers)
+allcells3.hybrid.m.markers <- allcells3.hybrid.m.markers %>% arrange(desc(avg_log2FC))
+hybrid.m_foldchange <- allcells3.hybrid.m.markers$avg_log2FC
+names(hybrid.m_foldchange) <- allcells3.hybrid.m.markers$gene
+
+head(hybrid.m_foldchange)
+
+hybrid.m_foldchange.df <- as.data.frame(hybrid.m_foldchange)
+
+hybrid.m_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(hybrid.m_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+hybrid.m_enslist <- na.omit(hybrid.m_foldchange.df)
+
+hybrid.m_enslist <- hybrid.m_foldchange.df$hybrid.m_foldchange
+names(hybrid.m_enslist) <- hybrid.m_foldchange.df$ENSEMBL
+hybrid.m_enslist
+
+View(hybrid.m_enslist)
+
+gse.hybrid.m <- gseGO(hybrid.m_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300, maxGSSize = 200)
+
+gse.hybrid.m.df <- as.data.frame(gse.hybrid.m)
+
+write.csv(gse.hybrid.m.df, file = "gse.hybrid.m.csv")
+
+require(DOSE)
+dotplothybrid.m <- dotplot(gse.hybrid.m, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplothybrid.m
+
+ggsave(filename = "gse.dotplot.hybrid.m.tiff", plot = dotplothybrid.m, width = 7, height = 6, dpi = 600)
+```
+
+```{r}
+hybrid.m_vs_hybrid.t_markers <- FindMarkers(allcells3_cellID, ident.1 = 'hybrid.m', ident.2 = 'hybrid.t', min.pct = 0.25)
+head(hybrid.m_vs_hybrid.t_markers, n = 20)
+#write.csv(hybrid.m_vs_hybrid.t_markers, file = "hybrid.m_v_t_markers")
+#View(hybrid.m_vs_hybrid.t_markers)
+
+hybrid.m_vs_hybrid.t_markers$gene <- rownames(hybrid.m_vs_hybrid.t_markers)
+hybrid.m_vs_hybrid.t_markers <- hybrid.m_vs_hybrid.t_markers %>% arrange(desc(avg_log2FC))
+hybrid.m_v_t_foldchange <- hybrid.m_vs_hybrid.t_markers$avg_log2FC
+names(hybrid.m_v_t_foldchange) <- hybrid.m_vs_hybrid.t_markers$gene
+
+head(hybrid.m_v_t_foldchange)
+
+hybrid.m_v_t_foldchange.df <- as.data.frame(hybrid.m_v_t_foldchange)
+
+hybrid.m_v_t_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(hybrid.m_v_t_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+hybrid.m_v_t_enslist <- na.omit(hybrid.m_v_t_foldchange.df)
+
+hybrid.m_v_t_enslist <- hybrid.m_v_t_foldchange.df$hybrid.m_v_t_foldchange
+names(hybrid.m_v_t_enslist) <- hybrid.m_v_t_foldchange.df$ENSEMBL
+hybrid.m_v_t_enslist
+
+#View(hybrid.m_v_t_enslist)
+
+gse.hybrid.m_v_t <- gseGO(hybrid.m_v_t_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300, maxGSSize = 200)
+
+gse.hybrid.m_v_t.df <- as.data.frame(gse.hybrid.m_v_t)
+
+#write.csv(gse.hybrid.m_v_t.df, file = "gse.hybrid.m_v_t.csv")
+
+require(DOSE)
+dotplothybrid.m_v_t <- dotplot(gse.hybrid.m_v_t, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplothybrid.m_v_t
+
+#ggsave(filename = "gse.dotplot.hybrid.m_v_t.tiff", plot = dotplothybrid.m, width = 7, height = 6, dpi = 600)
+
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+hybrid.m_vs_hybrid.t_markers
+
+# Add a column for -log10(p-value)
+hybrid.m_vs_hybrid.t_markers$log10_pval <- -log10(hybrid.m_vs_hybrid.t_markers$p_val_adj + 1e-300) # Avoid log(0)
+
+# Add a column to categorize genes (significant up/down or not)
+hybrid.m_vs_hybrid.t_markers$category <- ifelse(
+  hybrid.m_vs_hybrid.t_markers$p_val_adj < 0.000000000000000000000001 & hybrid.m_vs_hybrid.t_markers$avg_log2FC > 4.0, "Upregulated",
+  ifelse(hybrid.m_vs_hybrid.t_markers$p_val_adj < 0.000000000000000000000001 & hybrid.m_vs_hybrid.t_markers$avg_log2FC < -4.0, "Downregulated", "Not Significant")
+)
+
+
+
+ggplot(hybrid.m_vs_hybrid.t_markers, aes(x = avg_log2FC, y = -log10_pval, color = category, label = ifelse(category != "Not Significant", rownames(hybrid.m_vs_hybrid.t_markers), ""))) +
+  geom_point(alpha = 0.7) +
+  geom_text_repel(size = 3) +
+  scale_color_manual(values = c("Upregulated" = "red", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot of DEGs",
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-Value"
+  ) +
+  theme(
+    legend.position = "top",
+    text = element_text(size = 12)
+  )
+
+```
+
+
+
+```{r}
+library(tibble)
+
+# Add rownames as a column
+hybrid.m_vs_hybrid.t_markers$gene <- rownames(hybrid.m_vs_hybrid.t_markers)
+View(hybrid.m_vs_hybrid.t_markers)
+
+# Top 10 DEGs for hybrid.m (positive log2FC indicates higher in hybrid.m)
+top_genes_hybrid_m <- hybrid.m_vs_hybrid.t_markers %>%
+  filter(avg_log2FC > 0) %>%
+  arrange(p_val_adj) %>%
+  head(10) %>%
+  pull(gene)
+
+# Top 10 DEGs for hybrid.t (negative log2FC indicates higher in hybrid.t)
+top_genes_hybrid_t <- hybrid.m_vs_hybrid.t_markers %>%
+  filter(avg_log2FC < 0) %>%
+  arrange(p_val_adj) %>%
+  head(10) %>%
+  pull(gene)
+
+# Combine both sets of genes
+top_genes <- unique(c(top_genes_hybrid_f, top_genes_hybrid_p))
+
+# Dot plot for combined top genes
+DotPlot(
+  allcells3_cellID,
+  features = top_genes,
+  group.by = "orig.ident", 
+  dot.scale = 10
+) +
+  scale_color_gradient(low = "cyan3", high = "magenta3") +
+  theme_minimal() +
+  labs(title = "Dot Plot of Top DEGs from hybrid.m and hybrid.t") +
+  coord_flip() +
+   theme(
+    axis.text.y = element_text(size = 16, color = "black"), # Smaller text for y-axis
+    axis.text.x = element_text(size = 16, color = "black"), # Adjust x-axis text
+    axis.ticks.length.y = unit(0.00001, "cm"), # Reduce space between rows
+    axis.ticks.length.x = unit(0.00001, "mm"), # Reduce space between columns
+    axis.ticks.y = element_blank(), # Optionally hide y-axis ticks
+    panel.spacing = unit(0.001, "mm") # Reduce spacing between grid panels
+  )
+```
+
+#collapse all hybrid cells into one cell ID for DEG and GSEA 
+```{r}
+new.cluster.ids <- c('tumor', 'mac', 'hybrid', 'hybrid', 'tumor', 'hybrid', 'mac', 'hybrid', 'tumor', 'hybrid', 'hybrid', 'mixed')
+names(new.cluster.ids) <- levels(allcells3)
+allcells3_collapsed <- RenameIdents(allcells3, new.cluster.ids)
+DimPlot(allcells3_collapsed, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+```
+
+#find DEGs and GSEA for all hybrid cells 
+```{r}
+
+#DEGs
+allcells3_collapsed <- JoinLayers(allcells3_collapsed)
+
+#all hybrids compared to mac and tumor and mixed populations
+allcells3.hybrid.markers <- FindMarkers(allcells3_collapsed, ident.1 = 'hybrid', min.pct = 0.25)
+head(allcells3.hybrid.markers, n = 20)
+write.csv(allcells3.hybrid.markers, file = "allhybrid_markers")
+View(allcells3.hybrid.markers)
+
+#all hybrids vs tumor
+hybrid.v.tum.markers <- FindMarkers(allcells3_collapsed, ident.1 = 'hybrid', ident.2 = "tumor", min.pct = 0.25)
+write.csv(hybrid.v.tum.markers, file = "allhybrid_v_tum_markers")
+
+#all hybrids vs tumor
+hybrid.v.mac.markers <- FindMarkers(allcells3_collapsed, ident.1 = 'hybrid', ident.2 = "mac", min.pct = 0.25)
+write.csv(hybrid.v.mac.markers, file = "allhybrid_v_mac_markers")
+
+
+#GSEA
+allcells3.hybrid.markers$gene <- rownames(allcells3.hybrid.markers)
+allcells3.hybrid.markers <- allcells3.hybrid.markers %>% arrange(desc(avg_log2FC))
+hybrid_foldchange <- allcells3.hybrid.markers$avg_log2FC
+names(hybrid_foldchange) <- allcells3.hybrid.markers$gene
+
+head(hybrid_foldchange)
+
+hybrid_foldchange.df <- as.data.frame(hybrid_foldchange)
+
+hybrid_foldchange.df$ENSEMBL <- mapIds(org.Mm.eg.db, keys = rownames(hybrid_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+hybrid_enslist <- na.omit(hybrid_foldchange.df)
+
+hybrid_enslist <- hybrid_foldchange.df$hybrid_foldchange
+names(hybrid_enslist) <- hybrid_foldchange.df$ENSEMBL
+hybrid_enslist
+
+View(hybrid_enslist)
+
+gse.hybrid.goBP <- gseGO(hybrid_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Mm.eg.db", eps = 1e-300)
+
+gse.hybrid.df <- as.data.frame(gse.hybrid.goBP)
+
+write.csv(gse.hybrid.df, file = "gse.hybrid.goBP.csv")
+
+require(DOSE)
+dotplothybrid <- dotplot(gse.hybrid.goBP, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplothybrid
+
+ggsave(filename = "gse.dotplot.hybrid.goBP.tiff", plot = dotplothybrid, width = 7, height = 6, dpi = 600)
+
+
+```
+
