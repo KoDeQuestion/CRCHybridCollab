@@ -1,0 +1,1085 @@
+---
+title: "Hybrid cell identification from published CRC scRNAseq dataset - Tan lab"
+author: "Ashley Anderson"
+date: "2024-09-05"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# install.packages('Seurat')
+# install.packages('Matrix')
+# install.packages('ggplot2')
+# install.packages('gprofiler2')
+# install.packages('ggExtra')
+# install.packages('viridis')
+# 
+# remotes::install_github('chris-mcginnis-ucsf/DoubletFinder')
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("fgsea")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("SingleR")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("celldex")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("scds")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("enrich")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("DOSE")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("clusterProfiler")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("org.Hs.eg.db")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("hdf5r")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install('DoubletFinder')
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install('scDblFinder')
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install('SingleCellExperiment', force= TRUE)
+# 
+```
+
+```{r}
+library(Seurat)
+options(Seurat.object.assay.version = "v5")
+library(patchwork)
+library(dplyr)
+library(ggplot2)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(DOSE)
+library(fgsea)
+library(enrichplot)
+library(gprofiler2)
+library(scDblFinder)
+library(reticulate)
+library(RColorBrewer)
+library(ggExtra)
+library(cowplot)
+library(irlba)
+library(Matrix)
+library(ggrepel)
+library(SingleCellExperiment)
+library(scater)
+library(scds)
+library(future)
+library(viridis)
+library(hdf5r)
+library(DoubletFinder)
+library(tibble)
+random_seed <- 123456
+set.seed(random_seed)
+```
+
+
+```{r}
+setwd("F:/CRC-TanLab/data-synapse")
+epithelial_cells <- Read10X_h5("Epithelial_Count_matrix.h5")
+nonepithelial_cells <- Read10X_h5("NonEpithelial_Count_matrix.h5")
+
+epithelial_cells <- CreateSeuratObject(counts = epithelial_cells, project = "CRCepi.data", min.cells = 3, min.features = 200)
+nonepithelial_cells <- CreateSeuratObject(counts = nonepithelial_cells, project = "CRCnonepi.data", min.cells = 3, min.features = 200)
+
+
+##add in metadata 
+epithelial_metadata <- read.csv("Epithelial_metadata.csv")
+nonepithelial_metadata <- read.csv("NonEpithelial_metadata.csv")
+
+head(epithelial_metadata)
+# Check if the cell IDs match
+all(rownames(epithelial_cells@meta.data) %in% epithelial_metadata$cell.ID)  
+
+rownames(epithelial_metadata) <- epithelial_metadata$cell.ID
+epithelial_metadata <- epithelial_metadata[rownames(epithelial_cells@meta.data), ]
+
+# Add metadata to Seurat object
+epithelial_cells <- AddMetaData(epithelial_cells, epithelial_metadata)
+View(epithelial_cells)
+
+head(nonepithelial_metadata)
+# Check if the cell IDs match
+all(rownames(nonepithelial_cells@meta.data) %in% nonepithelial_metadata$cell.ID)  
+
+rownames(nonepithelial_metadata) <- nonepithelial_metadata$cell.ID
+nonepithelial_metadata <- nonepithelial_metadata[rownames(nonepithelial_cells@meta.data), ]
+
+# Add metadata to Seurat object
+nonepithelial_cells <- AddMetaData(nonepithelial_cells, nonepithelial_metadata)
+View(nonepithelial_cells)
+
+
+# Visualize QC metrics as a violin plot
+metricsplot <- VlnPlot(epithelial_cells, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+metricsplot
+
+
+
+#merge your two seurat objects into one 
+CRCcombined <- merge(epithelial_cells, y = c(nonepithelial_cells), project = "CRCcombined")
+CRCcombined
+
+head(colnames(CRCcombined))
+tail(colnames(CRCcombined))
+unique(sapply(X = strsplit(colnames(CRCcombined), split = "_"), FUN = "[", 1))
+table(CRCcombined$orig.ident)
+
+# Visualize QC metrics as a violin plot
+metricsplot1 <- VlnPlot(CRCcombined, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+metricsplot1
+
+##save the object 
+##saveRDS(CRCcombined, file = "CRCcombined")
+```
+
+```{r}
+CRCcombined <- NormalizeData(CRCcombined)
+CRCcombined <- FindVariableFeatures(CRCcombined)
+CRCcombined <- ScaleData(CRCcombined)
+CRCcombined <- RunPCA(CRCcombined)
+CRCcombined <- FindNeighbors(CRCcombined, dims = 1:30, reduction = "pca")
+CRCcombined <- FindClusters(CRCcombined, resolution = 2, cluster.name = "unintegrated_clusters")
+CRCcombined <- RunUMAP(CRCcombined, dims = 1:30, reduction = "pca")
+DimPlot(CRCcombined, reduction = "umap", group.by = c("seurat_clusters"))
+DimPlot(CRCcombined, reduction = "umap", group.by = c('cell.type'))
+DimPlot(CRCcombined, reduction = "umap", group.by = c('dataset'))
+```
+
+
+#evaluate tumor-macrophage hybrids
+```{r}
+
+FeaturePlot(CRCcombined, features = c("CD14", "CD163", "CD68", "ITGAM"))
+
+#Assigning hybrid cell identity to all tumor-macrophage positive cells that express EPCAM and/or ECAD and/or panCK and CD14 and/or CD163 and/or CD68 and or Itgam, Where panCK includes all keratins recognized by the AE1/AE3 clone used for IF studies in our lab (Note, KRT6 not found in dataset and KRT10 found to be highly expressed in immune cell populations in this dataset and others in protein atlas and thus was removed, Krt1 not expressed in epithielial population but was increased in mast cel population and thus was removed as well). The AE3 monoclonal antibody recognizes the 65 to 67 triplet, 64, 59, 58, 56, 54 and 52kD proteins also known as cytokeratin 1, 2, 3, 4, 5, 6, 7, and 8 while the AE1 antibody recognizes 56.5, 54', 50, 50', 48, and 40 kDa proteins (also known as CK10, 14, 15, 16 and 19).
+FeaturePlot(CRCcombined, features = c('KRT1', 'KRT2', 'KRT3', 'KRT4', 'KRT5', 'KRT7', 'KRT8', 'KRT10', 'KRT14', 'KRT15', 'KRT16', 'KRT19'))
+Idents(CRCcombined, WhichCells(object=CRCcombined, expression = (CD14 > 2 | CD68 > 2 | CD163 > 0 | ITGAM > 0) & (EPCAM > 0 | CDH1 > 0 | KRT2 > 0 | KRT3 > 0 | KRT4 > 0 | KRT5 > 0 | KRT7 > 0 | KRT8 > 0 | KRT14 > 0 | KRT15 > 0 | KRT16 > 0 | KRT19 > 0), slot='data')) <-"tumor-macrophage hybrids"
+Idents(CRCcombined, WhichCells(object=CRCcombined, expression = (CD14 > 2 | CD68 > 2 | CD163 > 0 | ITGAM > 0) & (EPCAM > 0 | CDH1 > 0 | KRT2 > 0 | KRT3 > 0 | KRT4 > 0 | KRT5 > 0 | KRT7 > 0 | KRT8 > 0 | KRT14 > 0 | KRT15 > 0 | KRT16 > 0 | KRT19 > 0), slot='data', invert = T)) <-"other"
+
+#Add hybrid cell identity to metadata with a column name 'hybridcells'
+CRCcombined$hybridcells <- Idents(CRCcombined)
+#Count number of hybrid cells 
+table(CRCcombined@meta.data$hybridcells)
+#Count number of hybrid cells per cell type category
+table(CRCcombined@meta.data$hybridcells, CRCcombined@meta.data$cell.type)
+
+
+DimPlot(CRCcombined, reduction = 'umap', group.by = c('hybridcells'), cols = c("gray", "red"), pt.size = 1)
+```
+
+
+#doublet detection and removal of cells with high doublet scores
+```{r}
+#identifying doublets and removing cells with high doublet scores from dataset
+CRCcombined[['RNA']] <- as(CRCcombined[['RNA']], Class='Assay')
+scdoublet <-as.SingleCellExperiment(CRCcombined)
+scdoublet = cxds(scdoublet)
+scdoublet = bcds(scdoublet)
+scdoublet = cxds_bcds_hybrid(scdoublet)
+
+CRCcombined$hybridscore <-scdoublet@colData@listData[["hybrid_score"]]
+CRCcombined$cxdsscore <-scdoublet@colData@listData[["cxds_score"]]
+CRCcombined$bcdsscore <-scdoublet@colData@listData[["bcds_score"]]
+
+#change hybrid cell identified to hybrid for cell.type but keep metadata of original cell type
+CRCcombined$original_cell_type <- CRCcombined$cell.type # Save original cell types
+table(CRCcombined@meta.data$cell.type, CRCcombined@meta.data$original_cell_type)
+
+# Identify hybrid cells based on expression criteria
+hybrid_cells <- WhichCells(
+  object = CRCcombined, 
+  expression = (CD14 > 2 | CD68 > 2 | CD163 > 0 | ITGAM > 0) & 
+               (EPCAM > 0 | CDH1 > 0 | KRT2 > 0 | KRT3 > 0 | KRT4 > 0 | 
+                KRT5 > 0 | KRT7 > 0 | KRT8 > 0 | KRT14 > 0 | KRT15 > 0 | 
+                KRT16 > 0 | KRT19 > 0), slot = 'data')
+
+# Add or update cell.type metadata to classify hybrids
+CRCcombined$cell.type <- ifelse(colnames(CRCcombined) %in% hybrid_cells,"Hybrid", CRCcombined$cell.type)
+
+# Count number of hybrid cells
+table(CRCcombined@meta.data$cell.type)
+
+
+#violin plot of hybrid scores before filtering for doublet cells.
+VlnPlot(CRCcombined, features = c("hybridscore"), pt.size = 0)
+VlnPlot(CRCcombined, features = c("hybridscore"), group.by = c('cell.type'), pt.size = 0)
+
+#Create a new Seurat object by keeping cells with hybrid score of less than 0.5
+CRCcombined_nd <- subset(CRCcombined, hybridscore < 0.5)
+
+#Count number of hybrid cells after removing doublets
+table(CRCcombined_nd@meta.data$hybridcells)
+#Count number of hybrid cells per cell type category
+table(CRCcombined_nd@meta.data$hybridcells, CRCcombined_nd@meta.data$cell.type)
+
+#violin plot of hybrid scores after filtering for doublet cells 
+VlnPlot(CRCcombined_nd, features = c("hybridscore"))
+VlnPlot(CRCcombined_nd, features = c("hybridscore"), group.by = c('cell.type'), pt.size = 0)
+
+table(CRCcombined@meta.data$sample.origin)
+
+```
+
+
+#run scDblFinder to compare to cxds/bcds scores above
+```{r}
+# Convert full Seurat object to SCE
+sce <- as.SingleCellExperiment(CRCcombined)
+
+# Compute density scores on matching cell barcodes
+density_scores <- computeDoubletDensity(sce)
+
+# Add scores back
+CRCcombined$scDblFinder_density <- density_scores[colnames(CRCcombined)]
+
+# Add cell names from the SCE object
+names(density_scores) <- colnames(sce)
+
+# Assign to Seurat object, now the names will match
+CRCcombined$scDblFinder_density <- density_scores[colnames(CRCcombined)]
+
+VlnPlot(CRCcombined, features = c("scDblFinder_density"))
+VlnPlot(CRCcombined, features = c("scDblFinder_density"), pt.size = 0, group.by = "cell.type")
+
+library(ggbreak)
+
+p <- VlnPlot(
+  CRCcombined,
+  features = "scDblFinder_density",
+  pt.size = 0,
+  group.by = "cell.type"
+)
+
+# Add a y-axis break at 20
+p + scale_y_break(c(5, max(CRCcombined$scDblFinder_density, na.rm = TRUE)), scales = 0.3)
+
+```
+
+
+
+#adding patient clinical metadata to evaluate runx1 pathway by site, age, gender, stage, etc
+```{r}
+
+clinical_metadata <- read.csv("patient_clinical_information.csv")
+head(clinical_metadata)
+head(CRCcombined@meta.data)
+
+rownames(clinical_metadata) <- clinical_metadata$patient.ID
+colnames(clinical_metadata)
+
+metadata_to_add <- clinical_metadata[, c('Gender', 'Age.at.recruitment', 'MSS.MSI', 'Site', 'Sidedness', 'Group.Stage', 'Stage.TNM', 'KRAS', 'BRAF', 'TP53', 'APC', 'PIK3CA', 'CMS', 'Stage')]
+
+rownames(metadata_to_add) <- clinical_metadata$patient.ID
+
+cell_metadata <- metadata_to_add[CRCcombined_nd@meta.data$patient.ID, ]
+
+CRCcombined_nd <- AddMetaData(object = CRCcombined_nd, metadata = cell_metadata)
+head(CRCcombined_nd)
+```
+
+```{r}
+hyb_only <- subset(
+  CRCcombined_nd,
+  subset = hybridcells == "tumor-macrophage hybrids" & 
+           sample.origin %in% c('Tumor', 'LymphNode', 'Tumor-2', 'Normal')
+)
+
+VlnPlot(
+  hyb_only,
+  features = c('NOC2L', 'UTP4', 'PDCD11', "ZG16"),
+  group.by = "sample.origin",
+  pt.size = 1,
+  cols = c('red3', 'blue3', "green4", 'purple')
+)
+
+VlnPlot(
+  hyb_only,
+  features = c('NOC2L', 'UTP4', 'PDCD11', "ZG16"),
+  group.by = "sample.origin",
+  pt.size = 0,
+  cols = c('red3', 'blue3', "green4", 'purple')
+)
+
+hyb_only$hyb_site <- case_when(
+  hyb_only$sample.origin %in% c("Tumor", "Tumor-2") ~ "TumorHybrid",
+  hyb_only$sample.origin == "LymphNode"             ~ "LNHybrid",
+  hyb_only$sample.origin == "Normal"                ~ "NormalHybrid",
+  TRUE                                              ~ NA_character_
+)
+
+Idents(hyb_only) <- "hyb_site"
+
+# Quick check:
+table(hyb_only$hyb_site)
+
+markers_all_hybs <- FindAllMarkers(
+  hyb_only,
+  only.pos        = TRUE,      # only upregulated in that group
+  test.use        = "wilcox",  # default is fine, but you can change
+  min.pct         = 0.1,
+  logfc.threshold = 0.25
+)
+
+# Inspect top markers per group
+markers_all_hybs %>% 
+  group_by(cluster) %>% 
+  top_n(20, wt = avg_log2FC) %>% 
+  arrange(cluster, desc(avg_log2FC)) %>% 
+  head()
+write.csv(markers_all_hybs, file = "allhybridDEGs.csv")
+
+# Tumor hybrids vs LN hybrids
+deg_tumor_vs_ln <- FindMarkers(
+  hyb_only,
+  ident.1        = "TumorHybrid",
+  ident.2        = "LNHybrid",
+  test.use       = "wilcox",
+  min.pct        = 0.1,
+  logfc.threshold= 0.25
+)
+write.csv(deg_tumor_vs_ln, file = "DEG-tumor-v-ln-hybrids.csv")
+
+# Tumor hybrids vs Normal hybrids
+deg_tumor_vs_normal <- FindMarkers(
+  hyb_only,
+  ident.1        = "TumorHybrid",
+  ident.2        = "NormalHybrid",
+  test.use       = "wilcox",
+  min.pct        = 0.1,
+  logfc.threshold= 0.25
+)
+write.csv(deg_tumor_vs_normal, file = "DEG-tumor-v-normal-hybrids.csv")
+
+# LN hybrids vs Normal hybrids
+deg_ln_vs_normal <- FindMarkers(
+  hyb_only,
+  ident.1        = "LNHybrid",
+  ident.2        = "NormalHybrid",
+  test.use       = "wilcox",
+  min.pct        = 0.1,
+  logfc.threshold= 0.25
+)
+write.csv(deg_ln_vs_normal, file = "DEG-ln-v-normal-hybrids.csv")
+```
+
+
+#subsetting data to look only at hybrid cells in tumor/LN samples (keeping normal samples separate)
+```{r}
+
+CRCcombined_T <- subset(CRCcombined_nd, subset = sample.origin %in% c('Tumor', 'LymphNode', 'Tumor-2'))
+
+table(CRCcombined_T@meta.data$sample.origin)
+
+#Count number of hybrid cells after removing doublets
+table(CRCcombined_T@meta.data$hybridcells)
+#Count number of hybrid cells per cell type category
+hybridcount_celltype <- table(CRCcombined_T@meta.data$hybridcells, CRCcombined_T@meta.data$cell.type)
+write.csv(hybridcount_celltype, file = "hybridcounts_celltype.csv")
+#Count number of hybrid cells per CRC stage
+table(CRCcombined_T@meta.data$hybridcells, CRCcombined_T@meta.data$Group.Stage)
+#Count number of hybrid cells per CRC stage
+report <- table(CRCcombined_T@meta.data$hybridcells, CRCcombined_T@meta.data$patient.ID)
+write.csv(report, file = "hybrids_patientID.csv")
+
+
+#used for figure 1 of manuscript 
+DimPlot(CRCcombined_T, reduction = 'umap', group.by = c('cell.type'))
+DimPlot(CRCcombined_T, reduction = 'umap', group.by = c('hybridcells'), cols = c("gray", "red3"), pt.size = 1)
+
+#code for just looking at hybrid cells in normal samples - for future analyses
+
+# CRCcombined_N <- subset(CRCcombined_nd, subset = sample.origin %in% c('Normal'))
+# 
+# table(CRCcombined_N@meta.data$sample.origin)
+# 
+# 
+# #Count number of hybrid cells after removing doublets
+# table(CRCcombined_N@meta.data$hybridcells)
+# #Count number of hybrid cells per cell type category
+# table(CRCcombined_N@meta.data$hybridcells, CRCcombined_N@meta.data$cell.type)
+# 
+# DimPlot(CRCcombined_N, reduction = 'umap', group.by = c('cell.type'))
+# DimPlot(CRCcombined_N, reduction = 'umap', group.by = c('hybridcells'), cols = c("gray", "red"), pt.size = 1)
+
+
+```
+
+#evaluating M1 vs M2 phenotypes in hybrid cells 
+```{r}
+McDC <- subset(CRCcombined_T, subset = cell.type == "McDC")
+
+#M1
+VlnPlot(McDC, features =  c("CD86", "CD40"))
+#M2
+VlnPlot(McDC, features =  c("CD163", "MRC1"))
+
+```
+
+#evaluating CD163 positive cells
+```{r}
+# pull metadata
+md <- CRCcombined_T@meta.data  
+
+# genes of interest
+genes <- c("CD163", "CD14", "CD68", "ITGAM")
+
+# grab expression values for those genes (from counts slot)
+expr <- GetAssayData(CRCcombined_T, slot = "counts")[genes, ]
+
+# add to metadata as TRUE/FALSE (whether >0)
+for (g in genes) {
+  md[[paste0(g, "_pos")]] <- expr[g, ] > 0
+}
+
+# make tables
+tables <- lapply(genes, function(g) {
+  table(md$hybridcells, md[[paste0(g, "_pos")]])
+})
+
+names(tables) <- genes
+tables
+```
+
+
+
+#evaluating Runx1 pathway in hybrid cells compared to other cell types
+```{r}
+library(ggbreak)
+VlnPlot(CRCcombined_T, features = c('NOC2L', 'UTP4', 'PDCD11'), group.by = "hybridcells", pt.size = 0, cols = c('tumor-macrophage hybrids' = 'green4', 'other' = 'gray'))
+
+VlnPlot(CRCcombined_T, features = 'NOC2L', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+
+VlnPlot(CRCcombined_T, features = 'UTP4', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+
+VlnPlot(CRCcombined_T, features = 'PDCD11', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+
+VlnPlot(CRCcombined_T, features = c('RUNX1', "SPI1", "THBS1", "LGALS3", "GRN", "PF4"), group.by = "hybridcells", pt.size = 0, cols = c('tumor-macrophage hybrids' = 'green4', 'other' = 'gray'))
+
+VlnPlot(CRCcombined_T, features = "RUNX1", group.by = 'cell.type', pt.size = 0)
+
+VlnPlot(CRCcombined_T, features = 'RUNX1', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+VlnPlot(CRCcombined_T, features = 'THBS1', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+VlnPlot(CRCcombined_T, features = 'SPI1', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+VlnPlot(CRCcombined_T, features = 'GRN', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+VlnPlot(CRCcombined_T, features = 'PF4', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+VlnPlot(CRCcombined_T, features = 'LGALS3', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0, cols = c('tumor-macrophage hybrids' = 'gray', 'other' = 'green4'))
+VlnPlot(CRCcombined_T, features = 'THBS1', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T, features = 'LGALS3', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T, features = 'SPI1', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T, features = 'GRN', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+PF4plt <- VlnPlot(CRCcombined_T, features = 'PF4', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+PF4plt + scale_y_break(c(.01, 1), scales = 0.3) 
+
+runx1pathwaygenes <- c("RUNX1", "THBS1", "SPI1", "PF4", "GRN", "LGALS3")
+
+# Ensure identities are set
+Idents(CRCcombined_T) <- CRCcombined_T$cell.type
+
+# Initialize a results data frame
+results <- data.frame(
+  gene = character(),
+  t_statistic = numeric(),
+  p_value = numeric(),
+  mean_Hybrid = numeric(),
+  mean_Epithelial = numeric(),
+  stringsAsFactors = FALSE
+)
+
+#stats for hybrid vs epithelial cells
+for (gene in runx1pathwaygenes) {
+  expr_df <- data.frame(
+    expr = FetchData(CRCcombined_T, gene)[,1],
+    cell_type = Idents(CRCcombined_T)
+  )
+  expr_sub <- expr_df[expr_df$cell_type %in% c("Hybrid", "Epithelial"), ]
+  
+  # Run t-test, only if both groups have at least two cells
+  if (length(unique(expr_sub$cell_type)) == 2 &&
+      sum(expr_sub$cell_type == "Hybrid") > 1 &&
+      sum(expr_sub$cell_type == "Epithelial") > 1) {
+    t_res <- t.test(expr ~ cell_type, data = expr_sub)
+    mean_hybrid <- mean(expr_sub$expr[expr_sub$cell_type == "Hybrid"])
+    mean_epi <- mean(expr_sub$expr[expr_sub$cell_type == "Epithelial"])
+    results <- rbind(results, data.frame(
+      gene = gene,
+      t_statistic = t_res$statistic,
+      p_value = t_res$p.value,
+      mean_Hybrid = mean_hybrid,
+      mean_Epithelial = mean_epi
+    ))
+  }
+}
+
+print(results)
+
+
+#stats for hybrid vs McDC cells
+
+# Ensure identities are set
+Idents(CRCcombined_T) <- CRCcombined_T$cell.type
+
+# Initialize a results data frame
+results <- data.frame(
+  gene = character(),
+  t_statistic = numeric(),
+  p_value = numeric(),
+  mean_Hybrid = numeric(),
+  mean_McDC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+
+for (gene in runx1pathwaygenes) {
+  expr_df <- data.frame(
+    expr = FetchData(CRCcombined_T, gene)[,1],
+    cell_type = Idents(CRCcombined_T)
+  )
+  expr_sub <- expr_df[expr_df$cell_type %in% c("Hybrid", "McDC"), ]
+  
+  # Run t-test, only if both groups have at least two cells
+  if (length(unique(expr_sub$cell_type)) == 2 &&
+      sum(expr_sub$cell_type == "Hybrid") > 1 &&
+      sum(expr_sub$cell_type == "McDC") > 1) {
+    t_res <- t.test(expr ~ cell_type, data = expr_sub)
+    mean_hybrid <- mean(expr_sub$expr[expr_sub$cell_type == "Hybrid"])
+    mean_McDC <- mean(expr_sub$expr[expr_sub$cell_type == "McDC"])
+    results <- rbind(results, data.frame(
+      gene = gene,
+      t_statistic = t_res$statistic,
+      p_value = t_res$p.value,
+      mean_Hybrid = mean_hybrid,
+      mean_McDC = mean_McDC
+    ))
+  }
+}
+
+print(results)
+
+
+VlnPlot(CRCcombined_T, features = 'RUNX1', group.by = 'sample.origin', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T, features = 'THBS1', group.by = 'sample.origin', split.by = 'hybridcells')
+VlnPlot(CRCcombined_T, features = 'LGALS3', group.by = 'sample.origin', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T, features = 'SPI1', group.by = 'sample.origin', split.by = 'hybridcells', pt.size = 0)
+
+
+VlnPlot(CRCcombined_T, features = 'CD163', group.by = 'sample.origin', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T, features = 'CD163', group.by = 'cell.type')
+FeaturePlot(CRCcombined_T, features = "CD163")
+
+VlnPlot(CRCcombined_T, features = 'RUNX1', group.by = 'MSS.MSI', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T, features = 'THBS1', group.by = 'MSS.MSI', split.by = 'hybridcells')
+VlnPlot(CRCcombined_T, features = 'LGALS3', group.by = 'MSS.MSI', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T, features = 'SPI1', group.by = 'MSS.MSI', split.by = 'hybridcells', pt.size = 0)
+
+
+VlnPlot(CRCcombined_T, features = 'RUNX1', group.by = 'Stage', split.by = 'hybridcells', pt.size = 0)
+
+
+```
+
+
+
+```{r}
+#hybrid DEG
+
+install.packages('remotes')
+remotes::install_github("immunogenomics/presto")
+library(presto)
+
+hybrid.markers <- FindMarkers(CRCcombined_T, ident.1 = 'tumor-macrophage hybrids', min.pct = 0.25)
+write.csv(hybrid.markers, file = "hybrid_markers.csv")
+View(hybrid.markers)
+
+hybridmarkers_df <- hybrid.markers %>% rownames_to_column(var = "gene")
+
+# pick top up and down
+top_up   <- hybridmarkers_df %>% 
+  filter(avg_log2FC > 0) %>% 
+  arrange(desc(avg_log2FC)) %>% 
+  slice_head(n = 70) 
+
+
+top_down <- hybridmarkers_df %>% 
+  filter(avg_log2FC < 0) %>% 
+  arrange(avg_log2FC) %>% 
+  slice_head(n = 20)
+
+
+genes_to_plot <- c(top_up$gene)
+
+
+# Scale the DEGs so they will appear in scale data slot, they were not originally scaled in seurat object because it only scales the top HVGs
+CRCcombined_T <- ScaleData(
+  CRCcombined_T, 
+  features = genes_to_plot,    
+  verbose  = FALSE
+)
+
+#subset for heatmap to show only hybrid, epi, and macrophage cells
+CRC.hybrid.epi.mac <- subset(CRCcombined_T, idents = c("Hybrid", "Epithelial", "McDC"))
+
+
+DoHeatmap(CRC.hybrid.epi.mac, features = genes_to_plot, group.by = "cell.type") 
+
+
+DotPlot(CRC.hybrid.epi.mac, features = genes_to_plot, group.by = "cell.type") + coord_flip()
+
+DotPlot(CRCcombined_T, features = genes_to_plot, group.by = "cell.type") + coord_flip() +
+   theme(axis.text.x = element_text(angle = 45, hjust = 1),
+         axis.text.y = element_text(face = "italic"))
+  
+Idents(CRCcombined_T) <- CRCcombined_T$cell.type  
+levels(Idents(CRCcombined_T))        # Active identities
+levels(factor(CRCcombined_T$cell.type))  # From metadata
+  
+
+#hybrid cells vs epithelial cells 
+hybrid.v.epi.markers <- FindMarkers(CRCcombined_T, ident.1 = 'Hybrid', ident.2 = "Epithelial", min.pct = 0.25)
+write.csv(hybrid.v.epi.markers, file = "hybrid-v-epi_markers")
+View(hybrid.v.epi.markers)
+
+
+hybrid.v.epi.markers_df <- hybrid.v.epi.markers %>% rownames_to_column(var = "gene")
+
+# pick top up and down
+top_up   <- hybrid.v.epi.markers_df %>% 
+  filter(avg_log2FC > 0) %>% 
+  arrange(desc(avg_log2FC)) %>% 
+  slice_head(n = 30) 
+
+genes_to_plot <- c(top_up$gene)
+
+
+# Scale the DEGs so they will appear in scale data slot, they were not originally scaled in seurat object because it only scales the top HVGs
+CRCcombined_T <- ScaleData(
+  CRCcombined_T, 
+  features = genes_to_plot,    
+  verbose  = FALSE
+)
+
+DoHeatmap(CRC.hybrid.epi.mac, features = genes_to_plot, group.by = "cell.type")
+
+
+
+#hybrid cells vs macrophage cells 
+hybrid.v.mac.markers <- FindMarkers(CRCcombined_T, ident.1 = 'Hybrid', ident.2 = "McDC", min.pct = 0.25)
+write.csv(hybrid.v.mac.markers, file = "hybrid-v-mac_markers.csv")
+View(hybrid.v.mac.markers)
+
+
+hybrid.v.mac.markers_df <- hybrid.v.mac.markers %>% rownames_to_column(var = "gene")
+
+# pick top up
+top_up   <- hybrid.v.mac.markers_df %>% 
+  filter(avg_log2FC > 0) %>% 
+  arrange(desc(avg_log2FC)) %>% 
+  slice_head(n = 30) 
+
+genes_to_plot <- c(top_up$gene)
+
+
+# Scale the DEGs so they will appear in scale data slot, they were not originally scaled in seurat object because it only scales the top HVGs
+CRC.hybrid.epi.mac <- ScaleData(
+  CRC.hybrid.epi.mac, 
+  features = genes_to_plot,    
+  verbose  = FALSE
+)
+
+
+DoHeatmap(CRC.hybrid.epi.mac, features = genes_to_plot, group.by = "cell.type")
+
+```
+
+#GSEA using DEG lists from above
+```{r}
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(DOSE)
+library(fgsea)
+library(enrichplot)
+
+#GSEA
+hybrid.markers$gene <- rownames(hybrid.markers)
+hybrid.markers <- hybrid.markers %>% arrange(desc(avg_log2FC))
+hybrid_foldchange <- hybrid.markers$avg_log2FC
+names(hybrid_foldchange) <- hybrid.markers$gene
+
+head(hybrid_foldchange)
+
+hybrid_foldchange.df <- as.data.frame(hybrid_foldchange)
+
+hybrid_foldchange.df$ENSEMBL <- mapIds(org.Hs.eg.db, keys = rownames(hybrid_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+hybrid_enslist <- na.omit(hybrid_foldchange.df)
+
+hybrid_enslist <- hybrid_foldchange.df$hybrid_foldchange
+names(hybrid_enslist) <- hybrid_foldchange.df$ENSEMBL
+hybrid_enslist
+
+View(hybrid_enslist)
+
+library(future)
+future::plan(future::sequential)
+
+gse.hybrid.goBP <- gseGO(hybrid_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = org.Hs.eg.db, eps = 1e-300, maxGSSize = 200)
+
+gse.hybrid.df <- as.data.frame(gse.hybrid.goBP)
+
+write.csv(gse.hybrid.df, file = "gse.hybrid.goBP.csv")
+
+
+
+require(DOSE)
+dotplothybrid <- dotplot(gse.hybrid.goBP, showCategory=10, split=".sign", label_format = 60) + facet_grid(.~.sign)  +
+  scale
+  theme(
+    axis.text.y = element_text(size = 14),      # Increase Y-axis text (GO terms)
+    axis.text.x = element_text(size = 14),      # X-axis (GeneRatio, etc.)
+    axis.title = element_text(size = 20),       # Axis titles
+    strip.text = element_text(size = 20),       # Facet strip text (".sign")
+    legend.text = element_text(size = 14),      # Legend labels
+    legend.title = element_text(size = 14),      # Legend title 
+    plot.margin = unit(c(1, 1, 1, 1), "cm")  # top, right, bottom, **left**
+  )
+  
+
+ dotplothybrid
+
+
+ggsave(filename = "gse.dotplot.hybrid.goBP.tiff", plot = dotplothybrid, width = 7, height = 6, dpi = 600)
+
+
+library(enrichplot)
+gse.hybrid.goBP <- pairwise_termsim(gse.hybrid.goBP)
+emapplot(gse.hybrid.goBP, showCategory = 30, cex_label_category = 0.7)
+
+
+#GSEA for hybrid vs epi
+hybrid.v.epi.markers$gene <- rownames(hybrid.v.epi.markers)
+hybrid.v.epi.markers <- hybrid.v.epi.markers %>% arrange(desc(avg_log2FC))
+hybrid_foldchange <- hybrid.v.epi.markers$avg_log2FC
+names(hybrid_foldchange) <- hybrid.v.epi.markers$gene
+
+head(hybrid_foldchange)
+
+hybrid_foldchange.df <- as.data.frame(hybrid_foldchange)
+
+hybrid_foldchange.df <- hybrid_foldchange.df[!duplicated(hybrid_foldchange.df$ENSEMBL), ]
+hybrid_enslist <- hybrid_foldchange.df$logFC
+names(hybrid_enslist) <- hybrid_foldchange.df$ENSEMBL
+
+hybrid_foldchange.df$ENSEMBL <- mapIds(org.Hs.eg.db, keys = rownames(hybrid_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+hybrid_enslist <- na.omit(hybrid_foldchange.df)
+
+hybrid_enslist <- hybrid_foldchange.df$hybrid_foldchange
+names(hybrid_enslist) <- hybrid_foldchange.df$ENSEMBL
+hybrid_enslist
+
+View(hybrid_enslist)
+
+gse.hybrid.v.epi.goBP <- gseGO(hybrid_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = "org.Hs.eg.db", eps = 1e-300, maxGSSize = 200)
+
+gse.hybrid.v.epi.df <- as.data.frame(gse.hybrid.goBP)
+
+write.csv(gse.hybrid.v.epi.df, file = "gse.hybrid.v.epi.goBP.csv")
+
+
+
+require(DOSE)
+dotplothybrid <- dotplot(gse.hybrid.v.epi.goBP, showCategory=10, split=".sign", label_format = 60) + facet_grid(.~.sign)  +
+  scale
+  theme(
+    axis.text.y = element_text(size = 14),      # Increase Y-axis text (GO terms)
+    axis.text.x = element_text(size = 14),      # X-axis (GeneRatio, etc.)
+    axis.title = element_text(size = 20),       # Axis titles
+    strip.text = element_text(size = 20),       # Facet strip text (".sign")
+    legend.text = element_text(size = 14),      # Legend labels
+    legend.title = element_text(size = 14),      # Legend title 
+    plot.margin = unit(c(1, 1, 1, 1), "cm")  # top, right, bottom, **left**
+  )
+  
+
+ dotplothybrid
+
+
+ggsave(filename = "gse.dotplot.hybrid.v.epi.goBP.tiff", plot = dotplothybrid, width = 7, height = 6, dpi = 600)
+
+
+library(enrichplot)
+gse.hybrid.v.epi.goBP <- pairwise_termsim(gse.hybrid.v.epi.goBP)
+emapplot(gse.hybrid.v.epi.goBP, showCategory = 30, cex_label_category = 0.7)
+
+
+
+#new to test
+library(dplyr)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+
+# Start with your markers object
+# Assume: hybrid.v.epi.markers is from FindMarkers, with rownames = gene symbols and avg_log2FC column
+
+# 1. Add gene symbol column and map ENSEMBL IDs
+hybrid.v.epi.markers$gene <- rownames(hybrid.v.epi.markers)
+hybrid.v.epi.markers$ENSEMBL <- mapIds(
+  org.Hs.eg.db,
+  keys = hybrid.v.epi.markers$gene,
+  keytype = "SYMBOL",
+  column = "ENSEMBL"
+)
+
+# 2. Remove rows without ENSEMBL IDs
+hybrid.v.epi.markers <- hybrid.v.epi.markers[!is.na(hybrid.v.epi.markers$ENSEMBL), ]
+
+# 3. Remove duplicate ENSEMBL IDs (keep highest |logFC|)
+hybrid.v.epi.markers <- hybrid.v.epi.markers %>%
+  group_by(ENSEMBL) %>%
+  slice_max(order_by = abs(avg_log2FC), n = 1) %>%
+  ungroup()
+
+# 4. Create named logFC vector for GSEA (names = ENSEMBL)
+hybrid_enslist <- hybrid.v.epi.markers$avg_log2FC
+names(hybrid_enslist) <- hybrid.v.epi.markers$ENSEMBL
+
+# 5. Sort for GSEA
+hybrid_enslist <- sort(hybrid_enslist, decreasing = TRUE)
+
+# 6. Run GSEA
+gse.hybrid.v.epi.goBP <- gseGO(
+  hybrid_enslist,
+  ont = "BP",
+  keyType = "ENSEMBL",
+  OrgDb = org.Hs.eg.db,
+  eps = 1e-300,
+  maxGSSize = 200
+)
+
+# 7. Save results
+gse.hybrid.v.epi.df <- as.data.frame(gse.hybrid.v.epi.goBP)
+write.csv(gse.hybrid.v.epi.df, file = "gse.hybrid.v.epi.goBP.csv")
+
+
+
+
+# Find all ENSEMBL IDs that are duplicated
+duplicated_ids <- hybrid.v.epi.markers$ENSEMBL[duplicated(hybrid.v.epi.markers$ENSEMBL)]
+unique_duplicated_ids <- unique(duplicated_ids)
+print(unique_duplicated_ids)
+```
+
+
+
+
+
+#subsetting data to look only at hybrid cells in matched tumor and lymph node patient samples (n=7)
+```{r}
+
+CRCcombined_T_LN <- subset(CRCcombined_T, subset = patient.ID %in% c('CRC2783', 'CRC2801', 'CRC2816', 'CRC2817', 'CRC2841', 'SC035', 'SC040'))
+
+table(CRCcombined_T_LN@meta.data$patient.ID)
+table(CRCcombined_T_LN@meta.data$sample.origin)
+
+#Count number of hybrid cells after removing doublets
+table(CRCcombined_T_LN@meta.data$hybridcells)
+#Count number of hybrid cells per cell type category
+table(CRCcombined_T_LN@meta.data$hybridcells, CRCcombined_T_LN@meta.data$cell.type)
+#Count number of hybrid cells per cell type category
+table(CRCcombined_T_LN@meta.data$hybridcells, CRCcombined_T_LN@meta.data$sample.origin)
+
+DimPlot(CRCcombined_T_LN, reduction = 'umap', group.by = c('cell.type'))
+DimPlot(CRCcombined_T_LN, reduction = 'umap', group.by = c('hybridcells'), cols = c("gray", "red"), pt.size = 1)
+
+FeaturePlot(CRCcombined_T, features = c('CD68', 'ITGAM', 'PTPRC', 'CD14'))
+
+```
+
+
+#evaluating Runx1 pathway in hybrid cells compared to other cell types and in tumor vs LN
+```{r}
+VlnPlot(CRCcombined_T_LN, features = 'RUNX1', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T_LN, features = 'THBS1', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T_LN, features = 'LGALS3', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T_LN, features = 'SPI1', group.by = 'cell.type', split.by = 'hybridcells', pt.size = 0)
+
+VlnPlot(CRCcombined_T_LN, features = 'RUNX1', group.by = 'sample.origin', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T_LN, features = 'THBS1', group.by = 'sample.origin', split.by = 'hybridcells')
+VlnPlot(CRCcombined_T_LN, features = 'LGALS3', group.by = 'sample.origin', split.by = 'hybridcells', pt.size = 0)
+VlnPlot(CRCcombined_T_LN, features = 'SPI1', group.by = 'sample.origin', split.by = 'hybridcells', pt.size = 0)
+
+```
+
+
+#hybrid DEG and GSEA for tumor vs LN hybrids 
+```{r}
+
+library(presto)
+
+# Combine tumor and tumor2 into one label
+CRCcombined$sample.origin[CRCcombined$sample.origin %in% c("Tumor", "Tumor-2")] <- "tumor"
+table(CRCcombined$sample.origin)
+CRCcombined_T_LN$sample.origin[CRCcombined_T_LN$sample.origin %in% c("Tumor", "Tumor-2")] <- "tumor"
+table(CRCcombined_T_LN$sample.origin)
+
+#subset seurat object to only evaluate hybrid cells between sample types (tumor hybrids vs lymph node hybrids)
+CRCcombined_T_LN_hybrids <- subset(CRCcombined_T_LN, subset = cell.type == "Hybrid")
+
+Idents(CRCcombined_T_LN_hybrids) <- "sample.origin"
+
+hybrid.markers.T_LN <- FindMarkers(CRCcombined_T_LN_hybrids, ident.1 = 'tumor', ident.2 = "LymphNode", min.pct = 0.25)
+write.csv(hybrid.markers.T_LN, file = "hybrid_markers_T_LN")
+View(hybrid.markers.T_LN)
+
+
+markers_df <- hybrid.markers.T_LN %>% rownames_to_column(var = "gene")
+
+
+# pick top up and down
+top_up   <- markers_df %>% 
+  filter(avg_log2FC > 0) %>% 
+  arrange(desc(avg_log2FC)) %>% 
+  slice_head(n = 20) 
+
+
+top_down <- markers_df %>% 
+  filter(avg_log2FC < 0) %>% 
+  arrange(avg_log2FC) %>% 
+  slice_head(n = 20)
+
+genes_to_plot <- c(top_up$gene, top_down$gene)
+
+# Scale the DEGs so they will appear in scale data slot, they were not originally scaled in seurat object because it only scales the top HVGs
+CRCcombined_T_LN_hybrids <- ScaleData(
+  CRCcombined_T_LN_hybrids, 
+  features = genes_to_plot,    # your top-up & top-down list
+  verbose  = FALSE
+)
+
+# DotPlot
+DotPlot(
+  object   = CRCcombined_T_LN_hybrids,
+  features = genes_to_plot,
+  group.by = "sample.origin"
+) + coord_flip() +
+  scale_colour_gradient2(
+    low      = "blue",
+    mid      = "grey90",
+    high     = "red",
+    midpoint = 0
+  ) 
+
+
+#heatmap
+DoHeatmap(
+  CRCcombined_T_LN_hybrids, 
+  features = genes_to_plot, 
+  slot     = "scale.data") + 
+  ggtitle("Top DEGs Tumor vs LN Hybrids") +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.text.y    = element_text(size = 14, face = "italic"),        # gene labels
+    axis.title     = element_blank(),
+    legend.text    = element_text(size = 14),
+    legend.title   = element_text(size = 14)
+  )
+
+
+
+#find shared genes between hybrids in tumor and lymph node
+avg_exp <- AggregateExpression(
+  CRCcombined_T_LN_hybrids, 
+  assays    = "RNA", 
+  slot      = "data", 
+  group.by  = "sample.origin"
+)$RNA
+
+#pick genes with avg expression > 0.5 in both
+shared_genes <- rownames(avg_exp)[
+  avg_exp[,"tumor"] >  0.5 &
+  avg_exp[,"LymphNode"]    >  0.5
+]
+
+#save file of shared genes 
+write.csv(avg_exp., file = "sharedgeneexpression-tumor-LN-matched-hybrids.csv")
+
+
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(DOSE)
+library(fgsea)
+library(enrichplot)
+
+
+#GSEA
+hybrid.markers.T_LN$gene <- rownames(hybrid.markers.T_LN)
+hybrid.markers.T_LN <- hybrid.markers.T_LN %>% arrange(desc(avg_log2FC))
+hybrid_foldchange <- hybrid.markers.T_LN$avg_log2FC
+names(hybrid_foldchange) <- hybrid.markers.T_LN$gene
+
+head(hybrid_foldchange)
+
+hybrid_foldchange.df <- as.data.frame(hybrid_foldchange)
+
+hybrid_foldchange.df$ENSEMBL <- mapIds(org.Hs.eg.db, keys = rownames(hybrid_foldchange.df), keytype = "SYMBOL", column = "ENSEMBL")
+
+# omit any NA values 
+hybrid_enslist <- na.omit(hybrid_foldchange.df)
+
+hybrid_enslist <- hybrid_foldchange.df$hybrid_foldchange
+names(hybrid_enslist) <- hybrid_foldchange.df$ENSEMBL
+hybrid_enslist
+
+View(hybrid_enslist)
+
+gse.hybrid.goBP <- gseGO(hybrid_enslist, ont = "BP", keyType = "ENSEMBL", OrgDb = org.Hs.eg.db, eps = 1e-300, maxGSSize = 200)
+
+gse.hybrid.df <- as.data.frame(gse.hybrid.goBP)
+
+write.csv(gse.hybrid.df, file = "gse.hybrids-matched-tumor-LN.goBP.csv")
+
+require(DOSE)
+dotplothybrid <- dotplot(gse.hybrid.goBP, showCategory=10, split=".sign") + facet_grid(.~.sign)
+dotplothybrid
+
+ggsave(filename = "gse.dotplot.hybrid.goBP.tiff", plot = dotplothybrid, width = 7, height = 6, dpi = 600)
+
+```
+
+
+
+
